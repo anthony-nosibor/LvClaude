@@ -22,7 +22,7 @@ const LettreDeVoitureScreen = () => {
   const [photo, setPhoto] = useState<string | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const cameraRef = useRef<Camera>(null);
+  const cameraRef = useRef<any>(null);
   const signatureRef = useRef<any>(null);
 
   const askForCameraPermission = async () => {

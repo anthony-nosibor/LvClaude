@@ -1,3 +1,4 @@
+import React, { forwardRef } from 'react';
 import { Platform, StyleSheet, Text, type TextProps } from 'react-native';
 
 import { Fonts, ThemeColor } from '@/constants/theme';
@@ -8,27 +9,32 @@ export type ThemedTextProps = TextProps & {
   themeColor?: ThemeColor;
 };
 
-export function ThemedText({ style, type = 'default', themeColor, ...rest }: ThemedTextProps) {
-  const theme = useTheme();
+export const ThemedText = forwardRef<Text, ThemedTextProps>(
+  ({ style, type = 'default', themeColor, ...rest }, ref) => {
+    const theme = useTheme();
 
-  return (
-    <Text
-      style={[
-        { color: theme[themeColor ?? 'text'] },
-        type === 'default' && styles.default,
-        type === 'title' && styles.title,
-        type === 'small' && styles.small,
-        type === 'smallBold' && styles.smallBold,
-        type === 'subtitle' && styles.subtitle,
-        type === 'link' && styles.link,
-        type === 'linkPrimary' && styles.linkPrimary,
-        type === 'code' && styles.code,
-        style,
-      ]}
-      {...rest}
-    />
-  );
-}
+    return (
+      <Text
+        ref={ref}
+        style={[
+          { color: theme[themeColor ?? 'text'] },
+          type === 'default' && styles.default,
+          type === 'title' && styles.title,
+          type === 'small' && styles.small,
+          type === 'smallBold' && styles.smallBold,
+          type === 'subtitle' && styles.subtitle,
+          type === 'link' && styles.link,
+          type === 'linkPrimary' && styles.linkPrimary,
+          type === 'code' && styles.code,
+          style,
+        ]}
+        {...rest}
+      />
+    );
+  }
+);
+
+ThemedText.displayName = 'ThemedText';
 
 const styles = StyleSheet.create({
   small: {
