@@ -1,102 +1,247 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet, Pressable } from 'react-native';
+import { Image } from 'expo-image';
+import { useRouter } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
+import { BrandColors } from '@/constants/brand';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useRouter } from 'expo-router';
+import {
+  subscribeToLettresDeVoiture,
+  type LettreDeVoitureRecord,
+} from '@/services/lettres-de-voiture';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
+const shortcuts = [
+  { title: 'Historique', description: 'Retrouver les lettres générées' },
+  { title: 'Modèles', description: 'Préparer les informations récurrentes' },
+  { title: 'Paramètres', description: 'Logo, société et mentions PDF' },
+];
 
 export default function HomeScreen() {
   const router = useRouter();
+  const [lettres, setLettres] = useState<LettreDeVoitureRecord[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToLettresDeVoiture(
+      (records) => {
+        setLettres(records);
+      },
+      () => {
+        setLettres([]);
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  const dashboardItems = useMemo(
+    () => [
+      {
+        label: 'Brouillons',
+        value: String(lettres.filter((lettre) => lettre.status === 'draft').length),
+        tone: BrandColors.blue,
+      },
+      {
+        label: 'PDF générés',
+        value: String(lettres.filter((lettre) => lettre.status === 'pdf_generated').length),
+        tone: BrandColors.orange,
+      },
+      {
+        label: 'Signatures',
+        value: String(lettres.filter((lettre) => lettre.media.hasSignature).length),
+        tone: BrandColors.success,
+      },
+    ],
+    [lettres]
+  );
+
   return (
-    <ThemedView style={styles.container}>
+    <View style={styles.screen}>
       <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}>
+          <View style={styles.logoPanel}>
+            <Image
+              source={require('@/assets/images/splash-logo.png')}
+              style={styles.logo}
+              contentFit="contain"
+            />
+          </View>
 
-        <Pressable onPress={() => router.push('/lettre-de-voiture')}>
-          <ThemedText type="code" style={styles.code}>
-            get started
-          </ThemedText>
-        </Pressable>
+          <View style={styles.header}>
+            <Text style={styles.eyebrow}>Gestion transport</Text>
+            <Text style={styles.title}>Lettres de voiture</Text>
+            <Text style={styles.subtitle}>
+              Créez, signez et exportez vos documents depuis le terrain.
+            </Text>
+          </View>
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
+          <Pressable
+            onPress={() => router.push('/lettre-de-voiture')}
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed]}>
+            <Text style={styles.primaryButtonText}>Nouvelle lettre de voiture</Text>
+          </Pressable>
 
-        {Platform.OS === 'web' && <WebBadge />}
+          <View style={styles.metricsGrid}>
+            {dashboardItems.map((item) => (
+              <View key={item.label} style={styles.metricCard}>
+                <View style={[styles.metricAccent, { backgroundColor: item.tone }]} />
+                <Text style={styles.metricValue}>{item.value}</Text>
+                <Text style={styles.metricLabel}>{item.label}</Text>
+              </View>
+            ))}
+          </View>
+
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Raccourcis</Text>
+          </View>
+
+          <View style={styles.shortcutList}>
+            {shortcuts.map((item) => (
+              <View key={item.title} style={styles.shortcutCard}>
+                <View>
+                  <Text style={styles.shortcutTitle}>{item.title}</Text>
+                  <Text style={styles.shortcutDescription}>{item.description}</Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        </ScrollView>
       </SafeAreaView>
-    </ThemedView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
+    backgroundColor: BrandColors.surfaceSoft,
   },
   safeArea: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
   },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
+  scrollContent: {
+    alignSelf: 'center',
     gap: Spacing.four,
+    maxWidth: MaxContentWidth,
+    paddingBottom: BottomTabInset + Spacing.five,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.four,
+    width: '100%',
   },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
+  logoPanel: {
+    alignItems: 'center',
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: 'center',
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+  },
+  logo: {
+    aspectRatio: 1400 / 349,
+    maxWidth: 560,
+    width: '100%',
+  },
+  header: {
+    gap: Spacing.one,
+  },
+  eyebrow: {
+    color: BrandColors.orange,
+    fontSize: 13,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  title: {
+    color: BrandColors.ink,
+    fontSize: 34,
+    fontWeight: '800',
+    lineHeight: 40,
+  },
+  subtitle: {
+    color: BrandColors.muted,
+    fontSize: 16,
+    lineHeight: 23,
+    maxWidth: 520,
+  },
+  primaryButton: {
+    alignItems: 'center',
+    backgroundColor: BrandColors.orange,
+    borderRadius: 8,
+    justifyContent: 'center',
+    minHeight: 54,
+    paddingHorizontal: Spacing.four,
+  },
+  primaryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  metricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.three,
+  },
+  metricCard: {
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexGrow: 1,
+    minWidth: 150,
+    padding: Spacing.three,
+  },
+  metricAccent: {
+    borderRadius: 999,
+    height: 4,
+    marginBottom: Spacing.three,
+    width: 42,
+  },
+  metricValue: {
+    color: BrandColors.ink,
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  metricLabel: {
+    color: BrandColors.muted,
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: Spacing.one,
+  },
+  sectionHeader: {
+    borderBottomColor: BrandColors.line,
+    borderBottomWidth: 1,
+    paddingBottom: Spacing.two,
+  },
+  sectionTitle: {
+    color: BrandColors.ink,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  shortcutList: {
+    gap: Spacing.two,
+  },
+  shortcutCard: {
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: Spacing.three,
+  },
+  shortcutTitle: {
+    color: BrandColors.ink,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  shortcutDescription: {
+    color: BrandColors.muted,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: Spacing.half,
+  },
+  pressed: {
+    opacity: 0.82,
   },
 });

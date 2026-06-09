@@ -1,29 +1,204 @@
-import React, { useState, useRef } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
-  View,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
   Text,
   TextInput,
-  StyleSheet,
-  ScrollView,
-  Button,
-  Image,
+  View,
+  type TextInputProps,
 } from 'react-native';
-import { Camera } from 'expo-camera';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Camera, CameraView } from 'expo-camera';
 import * as Print from 'expo-print';
 import SignatureView from 'react-native-signature-canvas';
-import { db } from '../firebase'; // Import the db object
 
-const LettreDeVoitureScreen = () => {
+import { BrandColors } from '@/constants/brand';
+import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import {
+  upsertLettreDeVoiture,
+  type LettreDeVoitureStatus,
+} from '@/services/lettres-de-voiture';
+
+const steps = [
+  { title: 'Parties', caption: 'Expéditeur et destinataire' },
+  { title: 'Trajet', caption: 'Chargement et livraison' },
+  { title: 'Marchandise', caption: 'Contenu transporté' },
+  { title: 'Photo', caption: 'Justificatif terrain' },
+  { title: 'Signature', caption: 'Validation client' },
+  { title: 'PDF', caption: 'Document final' },
+] as const;
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function formatDate(date: Date) {
+  return new Intl.DateTimeFormat('fr-FR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(date);
+}
+
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error
+    ? error.message
+    : "Une erreur inconnue a bloqué la sauvegarde Firebase.";
+}
+
+function ActionButton({
+  label,
+  onPress,
+  variant = 'primary',
+  disabled = false,
+}: {
+  label: string;
+  onPress: () => void;
+  variant?: 'primary' | 'secondary' | 'quiet' | 'danger';
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.actionButton,
+        variant === 'primary' && styles.primaryButton,
+        variant === 'secondary' && styles.secondaryButton,
+        variant === 'quiet' && styles.quietButton,
+        variant === 'danger' && styles.dangerButton,
+        disabled && styles.disabledButton,
+        pressed && !disabled && styles.pressed,
+      ]}>
+      <Text
+        style={[
+          styles.actionButtonText,
+          variant === 'secondary' && styles.secondaryButtonText,
+          variant === 'quiet' && styles.quietButtonText,
+          disabled && styles.disabledButtonText,
+        ]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  multiline = false,
+  ...props
+}: TextInputProps & {
+  label: string;
+  value: string;
+  onChangeText: (text: string) => void;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#9AA0B8"
+        multiline={multiline}
+        textAlignVertical={multiline ? 'top' : 'center'}
+        style={[styles.input, multiline && styles.multilineInput]}
+        {...props}
+      />
+    </View>
+  );
+}
+
+export default function LettreDeVoitureScreen() {
+  const [currentStep, setCurrentStep] = useState(0);
   const [expediteur, setExpediteur] = useState('');
   const [destinataire, setDestinataire] = useState('');
   const [lieuChargement, setLieuChargement] = useState('');
   const [lieuLivraison, setLieuLivraison] = useState('');
   const [marchandise, setMarchandise] = useState('');
+  const [reference, setReference] = useState('');
+  const [quantite, setQuantite] = useState('');
+  const [observations, setObservations] = useState('');
   const [photo, setPhoto] = useState<string | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
-  const cameraRef = useRef<any>(null);
+  const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [saveMessage, setSaveMessage] = useState('');
+  const [savedDocumentId, setSavedDocumentId] = useState<string | null>(null);
+  const cameraRef = useRef<CameraView | null>(null);
   const signatureRef = useRef<any>(null);
+  const createdAt = useMemo(() => new Date(), []);
+  const documentNumber = useMemo(() => {
+    const stamp = createdAt
+      .toISOString()
+      .replace(/[-:T.Z]/g, '')
+      .slice(0, 12);
+    return `NOHA-${stamp}`;
+  }, [createdAt]);
+
+  const canGeneratePdf = Boolean(
+    expediteur.trim() &&
+      destinataire.trim() &&
+      lieuChargement.trim() &&
+      lieuLivraison.trim() &&
+      marchandise.trim() &&
+      signature
+  );
+  const isSaving = saveState === 'saving';
+  const saveButtonLabel = isSaving ? 'Sauvegarde...' : 'Sauvegarder';
+
+  const buildPayload = (status: LettreDeVoitureStatus) => ({
+    documentNumber,
+    createdAtIso: createdAt.toISOString(),
+    expediteur: expediteur.trim(),
+    destinataire: destinataire.trim(),
+    lieuChargement: lieuChargement.trim(),
+    lieuLivraison: lieuLivraison.trim(),
+    marchandise: marchandise.trim(),
+    reference: reference.trim(),
+    quantite: quantite.trim(),
+    observations: observations.trim(),
+    status,
+    media: {
+      hasPhoto: Boolean(photo),
+      hasSignature: Boolean(signature),
+      photoLocalUri: photo,
+      signatureDataUrl: signature,
+    },
+  });
+
+  const saveLettre = async (status: LettreDeVoitureStatus = 'draft') => {
+    setSaveState('saving');
+    setSaveMessage('');
+
+    try {
+      const id = await upsertLettreDeVoiture(buildPayload(status));
+      setSavedDocumentId(id);
+      setSaveState('saved');
+      setSaveMessage(
+        status === 'pdf_generated'
+          ? 'Document sauvegardé dans Firebase.'
+          : 'Brouillon sauvegardé dans Firebase.'
+      );
+      return true;
+    } catch (error) {
+      setSaveState('error');
+      setSaveMessage(getErrorMessage(error));
+      return false;
+    }
+  };
 
   const askForCameraPermission = async () => {
     const { status } = await Camera.requestCameraPermissionsAsync();
@@ -31,164 +206,760 @@ const LettreDeVoitureScreen = () => {
   };
 
   const takePicture = async () => {
-    if (cameraRef.current) {
-      const photo = await cameraRef.current.takePictureAsync();
-      setPhoto(photo.uri);
+    const captured = await cameraRef.current?.takePictureAsync({ quality: 0.82 });
+    if (captured?.uri) {
+      setPhoto(captured.uri);
     }
   };
 
-  const handleSignature = (signature: string) => {
-    setSignature(signature);
+  const handleSignature = (signatureValue: string) => {
+    setSignature(signatureValue);
   };
 
-  const handleClear = () => {
-    signatureRef.current.clearSignature();
+  const handleClearSignature = () => {
+    signatureRef.current?.clearSignature();
     setSignature(null);
-  }
+  };
 
-  const handleConfirm = () => {
-    signatureRef.current.readSignature();
-  }
-
+  const handleConfirmSignature = () => {
+    signatureRef.current?.readSignature();
+  };
 
   const generatePdf = async () => {
+    if (!canGeneratePdf || isSaving) return;
+
+    const saved = await saveLettre('pdf_generated');
+    if (!saved) return;
+
+    const logoUri = Image.resolveAssetSource(require('@/assets/images/splash-logo.png')).uri;
+    const rows = [
+      ['Document', documentNumber],
+      ['Date', formatDate(createdAt)],
+      ['Expéditeur', expediteur],
+      ['Destinataire', destinataire],
+      ['Lieu de chargement', lieuChargement],
+      ['Lieu de livraison', lieuLivraison],
+      ['Référence', reference || 'Non renseignée'],
+      ['Quantité / colisage', quantite || 'Non renseigné'],
+      ['Marchandise', marchandise],
+      ['Observations', observations || 'Aucune'],
+    ];
+
     const html = `
-          <html>
-            <body>
-              <h1>Lettre de Voiture</h1>
-              <p><b>Expéditeur:</b> ${expediteur}</p>
-              <p><b>Destinataire:</b> ${destinataire}</p>
-              <p><b>Lieu de chargement:</b> ${lieuChargement}</p>
-              <p><b>Lieu de livraison:</b> ${lieuLivraison}</p>
-              <p><b>Marchandise:</b> ${marchandise}</p>
-              ${photo ? `<img src="${photo}" style="width: 200px;" />` : ''}
-              ${signature ? `<img src="${signature}" style="width: 200px;" />` : ''}
-            </body>
-          </html>
-        `;
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            * { box-sizing: border-box; }
+            body {
+              color: #20243A;
+              font-family: Arial, sans-serif;
+              margin: 0;
+              padding: 36px;
+            }
+            .header {
+              align-items: center;
+              border-bottom: 4px solid #F47F20;
+              display: flex;
+              justify-content: space-between;
+              padding-bottom: 18px;
+            }
+            .logo { height: 74px; object-fit: contain; }
+            .badge {
+              border: 1px solid #DEE2EF;
+              border-radius: 8px;
+              color: #56599C;
+              font-size: 12px;
+              font-weight: 700;
+              padding: 10px 14px;
+              text-align: right;
+            }
+            h1 {
+              color: #33386F;
+              font-size: 28px;
+              margin: 28px 0 18px;
+            }
+            table {
+              border-collapse: collapse;
+              width: 100%;
+            }
+            td {
+              border-bottom: 1px solid #DEE2EF;
+              font-size: 14px;
+              padding: 13px 10px;
+              vertical-align: top;
+            }
+            td:first-child {
+              color: #69708A;
+              font-weight: 700;
+              width: 34%;
+            }
+            .media-grid {
+              display: flex;
+              gap: 18px;
+              margin-top: 28px;
+            }
+            .media-card {
+              border: 1px solid #DEE2EF;
+              border-radius: 8px;
+              flex: 1;
+              min-height: 180px;
+              padding: 14px;
+            }
+            .media-title {
+              color: #56599C;
+              font-size: 13px;
+              font-weight: 800;
+              margin-bottom: 12px;
+              text-transform: uppercase;
+            }
+            .photo {
+              border-radius: 6px;
+              max-height: 220px;
+              object-fit: cover;
+              width: 100%;
+            }
+            .signature {
+              max-height: 150px;
+              object-fit: contain;
+              width: 100%;
+            }
+            .empty {
+              color: #9AA0B8;
+              font-size: 13px;
+              padding-top: 48px;
+              text-align: center;
+            }
+            .footer {
+              border-top: 1px solid #DEE2EF;
+              color: #69708A;
+              font-size: 11px;
+              margin-top: 34px;
+              padding-top: 12px;
+            }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <img class="logo" src="${logoUri}" />
+            <div class="badge">
+              ${escapeHtml(documentNumber)}<br />
+              ${escapeHtml(formatDate(createdAt))}
+            </div>
+          </div>
+          <h1>Lettre de voiture</h1>
+          <table>
+            ${rows
+              .map(
+                ([label, value]) =>
+                  `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`
+              )
+              .join('')}
+          </table>
+          <div class="media-grid">
+            <div class="media-card">
+              <div class="media-title">Photo marchandise</div>
+              ${
+                photo
+                  ? `<img class="photo" src="${photo}" />`
+                  : '<div class="empty">Aucune photo jointe</div>'
+              }
+            </div>
+            <div class="media-card">
+              <div class="media-title">Signature</div>
+              ${
+                signature
+                  ? `<img class="signature" src="${signature}" />`
+                  : '<div class="empty">Signature manquante</div>'
+              }
+            </div>
+          </div>
+          <div class="footer">
+            NohaTransport - Le service qui facilite votre quotidien
+          </div>
+        </body>
+      </html>
+    `;
 
     await Print.printAsync({ html });
   };
 
-  return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.title}>Lettre de Voiture</Text>
+  const goNext = () => setCurrentStep((step) => Math.min(step + 1, steps.length - 1));
+  const goPrevious = () => setCurrentStep((step) => Math.max(step - 1, 0));
 
-      <Text style={styles.label}>Expéditeur</Text>
-      <TextInput
-        style={styles.input}
-        value={expediteur}
-        onChangeText={setExpediteur}
-        placeholder="Nom et adresse de l'expéditeur"
-      />
-
-      <Text style={styles.label}>Destinataire</Text>
-      <TextInput
-        style={styles.input}
-        value={destinataire}
-        onChangeText={setDestinataire}
-        placeholder="Nom et adresse du destinataire"
-      />
-
-      <Text style={styles.label}>Lieu de chargement</Text>
-      <TextInput
-        style={styles.input}
-        value={lieuChargement}
-        onChangeText={setLieuChargement}
-        placeholder="Lieu de chargement"
-      />
-
-      <Text style={styles.label}>Lieu de livraison</Text>
-      <TextInput
-        style={styles.input}
-        value={lieuLivraison}
-        onChangeText={setLieuLivraison}
-        placeholder="Lieu de livraison"
-      />
-
-      <Text style={styles.label}>Marchandise</Text>
-      <TextInput
-        style={styles.input}
-        value={marchandise}
-        onChangeText={setMarchandise}
-        placeholder="Description de la marchandise"
-      />
-
-      <Text style={styles.label}>Photo de la marchandise</Text>
-      {hasPermission === null && (
-        <Button title="Demander l'autorisation de la caméra" onPress={askForCameraPermission} />
-      )}
-      {hasPermission === false && <Text>L'accès à la caméra a été refusé.</Text>}
-      {hasPermission && !photo && (
-        <View>
-          <Camera style={{ flex: 1, aspectRatio: 1 }} ref={cameraRef} />
-          <Button title="Prendre une photo" onPress={takePicture} />
-        </View>
-      )}
-      {photo && <Image source={{ uri: photo }} style={{ width: 200, height: 200 }} />}
-
-      <Text style={styles.label}>Signature</Text>
-      <View style={styles.signatureContainer}>
-        <SignatureView
-            ref={signatureRef}
-            onOK={handleSignature}
-            webStyle={`.m-signature-pad--footer {display: none}`}
-        />
-        <View style={styles.signatureButtons}>
-            <Button title="Vider" onPress={handleClear} />
-            <Button title="Confirmer" onPress={handleConfirm} />
-        </View>
-      </View>
-      {signature && (
-        <View style={{alignItems: 'center', marginTop: 10}}>
-            <Text>Signature enregistrée:</Text>
-            <Image
-                resizeMode={'contain'}
-                style={{ width: 300, height: 150 }}
-                source={{ uri: signature }}
+  const renderStepContent = () => {
+    switch (currentStep) {
+      case 0:
+        return (
+          <View style={styles.section}>
+            <Field
+              label="Expéditeur"
+              value={expediteur}
+              onChangeText={setExpediteur}
+              placeholder="Nom, adresse, contact"
+              multiline
             />
-        </View>
-      )}
+            <Field
+              label="Destinataire"
+              value={destinataire}
+              onChangeText={setDestinataire}
+              placeholder="Nom, adresse, contact"
+              multiline
+            />
+          </View>
+        );
+      case 1:
+        return (
+          <View style={styles.section}>
+            <Field
+              label="Lieu de chargement"
+              value={lieuChargement}
+              onChangeText={setLieuChargement}
+              placeholder="Adresse ou site de départ"
+              multiline
+            />
+            <Field
+              label="Lieu de livraison"
+              value={lieuLivraison}
+              onChangeText={setLieuLivraison}
+              placeholder="Adresse ou site d'arrivée"
+              multiline
+            />
+          </View>
+        );
+      case 2:
+        return (
+          <View style={styles.section}>
+            <Field
+              label="Marchandise"
+              value={marchandise}
+              onChangeText={setMarchandise}
+              placeholder="Description de la marchandise"
+              multiline
+            />
+            <View style={styles.inlineFields}>
+              <View style={styles.inlineField}>
+                <Field
+                  label="Référence"
+                  value={reference}
+                  onChangeText={setReference}
+                  placeholder="Commande, BL..."
+                />
+              </View>
+              <View style={styles.inlineField}>
+                <Field
+                  label="Quantité"
+                  value={quantite}
+                  onChangeText={setQuantite}
+                  placeholder="Colis, palettes..."
+                />
+              </View>
+            </View>
+            <Field
+              label="Observations"
+              value={observations}
+              onChangeText={setObservations}
+              placeholder="Réserves, température, consignes..."
+              multiline
+            />
+          </View>
+        );
+      case 3:
+        return (
+          <View style={styles.section}>
+            <Text style={styles.sectionLead}>Photo de la marchandise</Text>
+            {hasPermission === null && (
+              <View style={styles.noticeBox}>
+                <Text style={styles.noticeText}>Autorisation caméra requise.</Text>
+                <ActionButton
+                  label="Autoriser la caméra"
+                  onPress={askForCameraPermission}
+                  variant="secondary"
+                />
+              </View>
+            )}
+            {hasPermission === false && (
+              <View style={[styles.noticeBox, styles.dangerNotice]}>
+                <Text style={styles.noticeText}>L'accès à la caméra a été refusé.</Text>
+                <ActionButton
+                  label="Réessayer"
+                  onPress={askForCameraPermission}
+                  variant="secondary"
+                />
+              </View>
+            )}
+            {hasPermission && !photo && (
+              <View style={styles.cameraCard}>
+                <CameraView style={styles.cameraPreview} ref={cameraRef} />
+                <ActionButton label="Prendre une photo" onPress={takePicture} />
+              </View>
+            )}
+            {photo && (
+              <View style={styles.photoCard}>
+                <Image source={{ uri: photo }} style={styles.photoPreview} />
+                <ActionButton label="Reprendre la photo" onPress={() => setPhoto(null)} variant="secondary" />
+              </View>
+            )}
+          </View>
+        );
+      case 4:
+        return (
+          <View style={styles.section}>
+            <Text style={styles.sectionLead}>Signature client</Text>
+            <View style={styles.signatureContainer}>
+              <SignatureView
+                ref={signatureRef}
+                onOK={handleSignature}
+                autoClear={false}
+                webStyle={`
+                  .m-signature-pad { box-shadow: none; border: none; }
+                  .m-signature-pad--body { border: none; }
+                  .m-signature-pad--footer { display: none; }
+                  body,html { background: #ffffff; }
+                `}
+              />
+            </View>
+            <View style={styles.buttonRow}>
+              <ActionButton label="Effacer" onPress={handleClearSignature} variant="danger" />
+              <ActionButton label="Valider la signature" onPress={handleConfirmSignature} />
+            </View>
+            {signature && (
+              <View style={styles.signaturePreviewCard}>
+                <Text style={styles.previewLabel}>Signature enregistrée</Text>
+                <Image resizeMode="contain" style={styles.signaturePreview} source={{ uri: signature }} />
+              </View>
+            )}
+          </View>
+        );
+      default:
+        return (
+          <View style={styles.section}>
+            <View style={styles.summaryCard}>
+              <Text style={styles.summaryTitle}>Document prêt</Text>
+              <Text style={styles.summaryNumber}>{documentNumber}</Text>
+              <View style={styles.summaryRows}>
+                <Text style={styles.summaryRow}>Expéditeur : {expediteur || 'à compléter'}</Text>
+                <Text style={styles.summaryRow}>Destinataire : {destinataire || 'à compléter'}</Text>
+                <Text style={styles.summaryRow}>Marchandise : {marchandise || 'à compléter'}</Text>
+                <Text style={styles.summaryRow}>Signature : {signature ? 'validée' : 'manquante'}</Text>
+                <Text style={styles.summaryRow}>
+                  Firebase : {savedDocumentId ? `document ${savedDocumentId}` : 'non sauvegardé'}
+                </Text>
+              </View>
+            </View>
+            {!canGeneratePdf && (
+              <Text style={styles.warningText}>
+                Complétez les champs obligatoires et validez la signature avant génération.
+              </Text>
+            )}
+          </View>
+        );
+    }
+  };
 
+  return (
+    <View style={styles.screen}>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}>
+          <View style={styles.topBar}>
+            <Image
+              source={require('@/assets/images/splash-logo.png')}
+              resizeMode="contain"
+              style={styles.logo}
+            />
+            <Text style={styles.documentBadge}>{documentNumber}</Text>
+          </View>
 
-      <Button title="Générer le PDF" onPress={generatePdf} />
-    </ScrollView>
+          <View style={styles.header}>
+            <Text style={styles.title}>Lettre de voiture</Text>
+            <Text style={styles.subtitle}>Saisie terrain, signature et PDF en fin de parcours.</Text>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.stepList}>
+            {steps.map((step, index) => {
+              const isActive = currentStep === index;
+              const isDone = currentStep > index;
+              return (
+                <Pressable
+                  key={step.title}
+                  onPress={() => setCurrentStep(index)}
+                  style={[styles.stepPill, isActive && styles.activeStepPill]}>
+                  <View style={[styles.stepNumber, (isActive || isDone) && styles.activeStepNumber]}>
+                    <Text style={[styles.stepNumberText, (isActive || isDone) && styles.activeStepNumberText]}>
+                      {index + 1}
+                    </Text>
+                  </View>
+                  <View>
+                    <Text style={[styles.stepTitle, isActive && styles.activeStepTitle]}>{step.title}</Text>
+                    <Text style={styles.stepCaption}>{step.caption}</Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          <View style={styles.formCard}>{renderStepContent()}</View>
+
+          {saveState !== 'idle' && (
+            <View style={[styles.syncNotice, saveState === 'error' && styles.syncNoticeError]}>
+              <Text
+                style={[
+                  styles.syncNoticeText,
+                  saveState === 'error' && styles.syncNoticeErrorText,
+                ]}>
+                {saveState === 'saving' ? 'Sauvegarde Firebase en cours...' : saveMessage}
+              </Text>
+            </View>
+          )}
+
+          <View style={styles.navigationRow}>
+            <ActionButton
+              label="Retour"
+              onPress={goPrevious}
+              variant="quiet"
+              disabled={currentStep === 0}
+            />
+            <ActionButton
+              label={saveButtonLabel}
+              onPress={() => saveLettre('draft')}
+              variant="secondary"
+              disabled={isSaving}
+            />
+            {currentStep < steps.length - 1 ? (
+              <ActionButton label="Continuer" onPress={goNext} />
+            ) : (
+              <ActionButton
+                label="Sauvegarder et générer le PDF"
+                onPress={generatePdf}
+                disabled={!canGeneratePdf || isSaving}
+              />
+            )}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    padding: 20,
+    backgroundColor: BrandColors.surfaceSoft,
+  },
+  safeArea: {
+    flex: 1,
+  },
+  scrollContent: {
+    alignSelf: 'center',
+    maxWidth: MaxContentWidth,
+    paddingBottom: BottomTabInset + Spacing.five,
+    paddingHorizontal: Spacing.four,
+    paddingTop: Spacing.four,
+    width: '100%',
+  },
+  topBar: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: Spacing.three,
+    justifyContent: 'space-between',
+  },
+  logo: {
+    aspectRatio: 1400 / 349,
+    maxWidth: 320,
+    width: '60%',
+  },
+  documentBadge: {
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    color: BrandColors.blue,
+    fontSize: 12,
+    fontWeight: '800',
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
+  },
+  header: {
+    marginTop: Spacing.four,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 20,
+    color: BrandColors.ink,
+    fontSize: 30,
+    fontWeight: '800',
+    lineHeight: 36,
+  },
+  subtitle: {
+    color: BrandColors.muted,
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: Spacing.one,
+  },
+  stepList: {
+    gap: Spacing.two,
+    paddingVertical: Spacing.four,
+  },
+  stepPill: {
+    alignItems: 'center',
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: Spacing.two,
+    minWidth: 188,
+    padding: Spacing.two,
+  },
+  activeStepPill: {
+    borderColor: BrandColors.orange,
+  },
+  stepNumber: {
+    alignItems: 'center',
+    backgroundColor: BrandColors.surfaceSoft,
+    borderRadius: 999,
+    height: 30,
+    justifyContent: 'center',
+    width: 30,
+  },
+  activeStepNumber: {
+    backgroundColor: BrandColors.orange,
+  },
+  stepNumberText: {
+    color: BrandColors.muted,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  activeStepNumberText: {
+    color: '#FFFFFF',
+  },
+  stepTitle: {
+    color: BrandColors.ink,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  activeStepTitle: {
+    color: BrandColors.orangeDark,
+  },
+  stepCaption: {
+    color: BrandColors.muted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  formCard: {
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: Spacing.four,
+  },
+  section: {
+    gap: Spacing.three,
+  },
+  sectionLead: {
+    color: BrandColors.ink,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  field: {
+    gap: Spacing.one,
   },
   label: {
-    fontSize: 16,
-    marginTop: 10,
+    color: BrandColors.ink,
+    fontSize: 13,
+    fontWeight: '800',
   },
   input: {
+    backgroundColor: BrandColors.surfaceSoft,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#ccc',
-    padding: 10,
-    borderRadius: 5,
-    marginTop: 5,
+    color: BrandColors.ink,
+    fontSize: 15,
+    minHeight: 48,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  multilineInput: {
+    minHeight: 92,
+  },
+  inlineFields: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.three,
+  },
+  inlineField: {
+    flexBasis: 220,
+    flexGrow: 1,
+  },
+  noticeBox: {
+    backgroundColor: BrandColors.surfaceSoft,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: Spacing.three,
+    padding: Spacing.three,
+  },
+  dangerNotice: {
+    borderColor: '#F0C5C5',
+  },
+  noticeText: {
+    color: BrandColors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  cameraCard: {
+    gap: Spacing.three,
+  },
+  cameraPreview: {
+    aspectRatio: 1,
+    borderRadius: 8,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  photoCard: {
+    gap: Spacing.three,
+  },
+  photoPreview: {
+    aspectRatio: 1,
+    borderRadius: 8,
+    width: '100%',
   },
   signatureContainer: {
-    height: 250,
+    backgroundColor: '#FFFFFF',
+    borderColor: BrandColors.line,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#ccc',
-    borderRadius: 5,
-    marginTop: 5,
+    height: 260,
+    overflow: 'hidden',
   },
-  signatureButtons: {
+  signaturePreviewCard: {
+    backgroundColor: BrandColors.surfaceSoft,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: Spacing.three,
+  },
+  previewLabel: {
+    color: BrandColors.success,
+    fontSize: 13,
+    fontWeight: '800',
+    marginBottom: Spacing.two,
+  },
+  signaturePreview: {
+    height: 120,
+    width: '100%',
+  },
+  buttonRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 10,
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  actionButton: {
+    alignItems: 'center',
+    borderRadius: 8,
+    justifyContent: 'center',
+    minHeight: 48,
+    minWidth: 138,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  primaryButton: {
+    backgroundColor: BrandColors.orange,
+  },
+  secondaryButton: {
+    backgroundColor: BrandColors.blue,
+  },
+  quietButton: {
+    backgroundColor: 'transparent',
+    borderColor: BrandColors.line,
+    borderWidth: 1,
+  },
+  dangerButton: {
+    backgroundColor: BrandColors.danger,
+  },
+  disabledButton: {
+    backgroundColor: '#E7E9F2',
+    borderColor: '#E7E9F2',
+  },
+  actionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  secondaryButtonText: {
+    color: '#FFFFFF',
+  },
+  quietButtonText: {
+    color: BrandColors.blue,
+  },
+  disabledButtonText: {
+    color: '#9AA0B8',
+  },
+  pressed: {
+    opacity: 0.82,
+  },
+  summaryCard: {
+    backgroundColor: BrandColors.surfaceSoft,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: Spacing.three,
+  },
+  summaryTitle: {
+    color: BrandColors.ink,
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  summaryNumber: {
+    color: BrandColors.orange,
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: Spacing.one,
+  },
+  summaryRows: {
+    gap: Spacing.one,
+    marginTop: Spacing.three,
+  },
+  summaryRow: {
+    color: BrandColors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  warningText: {
+    color: BrandColors.danger,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 19,
+  },
+  syncNotice: {
+    backgroundColor: '#EEF8F3',
+    borderColor: '#B9DFC9',
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: Spacing.three,
+    padding: Spacing.three,
+  },
+  syncNoticeError: {
+    backgroundColor: '#FFF1F1',
+    borderColor: '#F0C5C5',
+  },
+  syncNoticeText: {
+    color: BrandColors.success,
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 19,
+  },
+  syncNoticeErrorText: {
+    color: BrandColors.danger,
+  },
+  navigationRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+    justifyContent: 'space-between',
+    marginTop: Spacing.four,
   },
 });
-
-export default LettreDeVoitureScreen;

@@ -1,180 +1,365 @@
-import { Image } from 'expo-image';
-import { SymbolView } from 'expo-symbols';
-import { Platform, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { ExternalLink } from '@/components/external-link';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Collapsible } from '@/components/ui/collapsible';
-import { WebBadge } from '@/components/web-badge';
+import { BrandColors } from '@/constants/brand';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import {
+  subscribeToLettresDeVoiture,
+  type LettreDeVoitureRecord,
+} from '@/services/lettres-de-voiture';
 
-export default function TabTwoScreen() {
-  const safeAreaInsets = useSafeAreaInsets();
-  const insets = {
-    ...safeAreaInsets,
-    bottom: safeAreaInsets.bottom + BottomTabInset + Spacing.three,
-  };
-  const theme = useTheme();
+function formatDate(date: Date | null) {
+  if (!date) {
+    return 'Date inconnue';
+  }
 
-  const contentPlatformStyle = Platform.select({
-    android: {
-      paddingTop: insets.top,
-      paddingLeft: insets.left,
-      paddingRight: insets.right,
-      paddingBottom: insets.bottom,
-    },
-    web: {
-      paddingTop: Spacing.six,
-      paddingBottom: Spacing.four,
-    },
-  });
+  return new Intl.DateTimeFormat('fr-FR', {
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(date);
+}
+
+export default function HistoryScreen() {
+  const [lettres, setLettres] = useState<LettreDeVoitureRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  useEffect(() => {
+    const unsubscribe = subscribeToLettresDeVoiture(
+      (records) => {
+        setLettres(records);
+        setErrorMessage('');
+        setIsLoading(false);
+      },
+      (error) => {
+        setErrorMessage(error.message);
+        setIsLoading(false);
+      }
+    );
+
+    return unsubscribe;
+  }, []);
+
+  const historyStats = useMemo(
+    () => [
+      {
+        label: 'Documents',
+        value: String(lettres.length),
+      },
+      {
+        label: 'PDF générés',
+        value: String(lettres.filter((lettre) => lettre.status === 'pdf_generated').length),
+      },
+      {
+        label: 'Signatures',
+        value: String(lettres.filter((lettre) => lettre.media.hasSignature).length),
+      },
+      {
+        label: 'Photos jointes',
+        value: String(lettres.filter((lettre) => lettre.media.hasPhoto).length),
+      },
+    ],
+    [lettres]
+  );
 
   return (
-    <ScrollView
-      style={[styles.scrollView, { backgroundColor: theme.background }]}
-      contentInset={insets}
-      contentContainerStyle={[styles.contentContainer, contentPlatformStyle]}>
-      <ThemedView style={styles.container}>
-        <ThemedView style={styles.titleContainer}>
-          <ThemedText type="subtitle">Explore</ThemedText>
-          <ThemedText style={styles.centerText} themeColor="textSecondary">
-            This starter app includes example{'\n'}code to help you get started.
-          </ThemedText>
+    <View style={styles.screen}>
+      <SafeAreaView style={styles.safeArea}>
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.header}>
+            <Text style={styles.eyebrow}>Suivi documentaire</Text>
+            <Text style={styles.title}>Historique</Text>
+            <Text style={styles.subtitle}>
+              Les lettres sauvegardées dans Firebase apparaissent ici en temps réel.
+            </Text>
+          </View>
 
-          <ExternalLink href="https://docs.expo.dev" asChild>
-            <Pressable style={({ pressed }) => pressed && styles.pressed}>
-              <ThemedView type="backgroundElement" style={styles.linkButton}>
-                <ThemedText type="link">Expo documentation</ThemedText>
-                <SymbolView
-                  tintColor={theme.text}
-                  name={{ ios: 'arrow.up.right.square', android: 'link', web: 'link' }}
-                  size={12}
-                />
-              </ThemedView>
-            </Pressable>
-          </ExternalLink>
-        </ThemedView>
+          <View style={styles.statsRow}>
+            {historyStats.map((item) => (
+              <View key={item.label} style={styles.statCard}>
+                <Text style={styles.statValue}>{item.value}</Text>
+                <Text style={styles.statLabel}>{item.label}</Text>
+              </View>
+            ))}
+          </View>
 
-        <ThemedView style={styles.sectionsWrapper}>
-          <Collapsible title="File-based routing">
-            <ThemedText type="small">
-              This app has two screens: <ThemedText type="code">src/app/index.tsx</ThemedText> and{' '}
-              <ThemedText type="code">src/app/explore.tsx</ThemedText>
-            </ThemedText>
-            <ThemedText type="small">
-              The layout file in <ThemedText type="code">src/app/_layout.tsx</ThemedText> sets up
-              the tab navigator.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/router/introduction">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          {isLoading && (
+            <View style={styles.feedbackState}>
+              <ActivityIndicator color={BrandColors.orange} />
+              <Text style={styles.feedbackText}>Chargement Firebase...</Text>
+            </View>
+          )}
 
-          <Collapsible title="Android, iOS, and web support">
-            <ThemedView type="backgroundElement" style={styles.collapsibleContent}>
-              <ThemedText type="small">
-                You can open this project on Android, iOS, and the web. To open the web version,
-                press <ThemedText type="smallBold">w</ThemedText> in the terminal running this
-                project.
-              </ThemedText>
-              <Image
-                source={require('@/assets/images/tutorial-web.png')}
-                style={styles.imageTutorial}
-              />
-            </ThemedView>
-          </Collapsible>
+          {!isLoading && errorMessage && (
+            <View style={[styles.feedbackState, styles.errorState]}>
+              <Text style={styles.errorTitle}>Impossible de charger l'historique</Text>
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
+          )}
 
-          <Collapsible title="Images">
-            <ThemedText type="small">
-              For static images, you can use the <ThemedText type="code">@2x</ThemedText> and{' '}
-              <ThemedText type="code">@3x</ThemedText> suffixes to provide files for different
-              screen densities.
-            </ThemedText>
-            <Image source={require('@/assets/images/react-logo.png')} style={styles.imageReact} />
-            <ExternalLink href="https://reactnative.dev/docs/images">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          {!isLoading && !errorMessage && lettres.length === 0 && (
+            <View style={styles.emptyState}>
+              <View style={styles.emptyAccent} />
+              <Text style={styles.emptyTitle}>Aucun document enregistré</Text>
+              <Text style={styles.emptyText}>
+                Créez une lettre de voiture puis sauvegardez-la pour alimenter cet historique.
+              </Text>
+            </View>
+          )}
 
-          <Collapsible title="Light and dark mode components">
-            <ThemedText type="small">
-              This template has light and dark mode support. The{' '}
-              <ThemedText type="code">useColorScheme()</ThemedText> hook lets you inspect what the
-              user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          {!isLoading && !errorMessage && lettres.length > 0 && (
+            <View style={styles.list}>
+              {lettres.map((lettre) => (
+                <View key={lettre.id} style={styles.letterCard}>
+                  <View style={styles.letterHeader}>
+                    <View style={styles.letterTitleBlock}>
+                      <Text style={styles.letterNumber}>{lettre.documentNumber}</Text>
+                      <Text style={styles.letterDate}>{formatDate(lettre.createdAt)}</Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.statusBadge,
+                        lettre.status === 'pdf_generated' && styles.statusBadgeDone,
+                      ]}>
+                      <Text
+                        style={[
+                          styles.statusBadgeText,
+                          lettre.status === 'pdf_generated' && styles.statusBadgeDoneText,
+                        ]}>
+                        {lettre.status === 'pdf_generated' ? 'PDF généré' : 'Brouillon'}
+                      </Text>
+                    </View>
+                  </View>
 
-          <Collapsible title="Animations">
-            <ThemedText type="small">
-              This template includes an example of an animated component. The{' '}
-              <ThemedText type="code">src/components/ui/collapsible.tsx</ThemedText> component uses
-              the powerful <ThemedText type="code">react-native-reanimated</ThemedText> library to
-              animate opening this hint.
-            </ThemedText>
-          </Collapsible>
-        </ThemedView>
-        {Platform.OS === 'web' && <WebBadge />}
-      </ThemedView>
-    </ScrollView>
+                  <View style={styles.letterBody}>
+                    <Text style={styles.letterLine}>Expéditeur : {lettre.expediteur || 'Non renseigné'}</Text>
+                    <Text style={styles.letterLine}>
+                      Destinataire : {lettre.destinataire || 'Non renseigné'}
+                    </Text>
+                    <Text style={styles.letterLine}>
+                      Trajet : {lettre.lieuChargement || 'Départ ?'} {'->'}{' '}
+                      {lettre.lieuLivraison || 'Arrivée ?'}
+                    </Text>
+                    <Text style={styles.letterLine}>
+                      Marchandise : {lettre.marchandise || 'Non renseignée'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.mediaRow}>
+                    <Text style={styles.mediaChip}>
+                      {lettre.media.hasPhoto ? 'Photo jointe' : 'Sans photo'}
+                    </Text>
+                    <Text style={styles.mediaChip}>
+                      {lettre.media.hasSignature ? 'Signature validée' : 'Sans signature'}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollView: {
+  screen: {
+    flex: 1,
+    backgroundColor: BrandColors.surfaceSoft,
+  },
+  safeArea: {
     flex: 1,
   },
-  contentContainer: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-  },
-  container: {
+  scrollContent: {
+    alignSelf: 'center',
+    gap: Spacing.four,
     maxWidth: MaxContentWidth,
-    flexGrow: 1,
-  },
-  titleContainer: {
-    gap: Spacing.three,
-    alignItems: 'center',
+    paddingBottom: BottomTabInset + Spacing.five,
     paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.six,
+    paddingTop: Spacing.four,
+    width: '100%',
   },
-  centerText: {
+  header: {
+    gap: Spacing.one,
+  },
+  eyebrow: {
+    color: BrandColors.orange,
+    fontSize: 13,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  title: {
+    color: BrandColors.ink,
+    fontSize: 34,
+    fontWeight: '800',
+    lineHeight: 40,
+  },
+  subtitle: {
+    color: BrandColors.muted,
+    fontSize: 15,
+    lineHeight: 22,
+    maxWidth: 560,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.three,
+  },
+  statCard: {
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    flexGrow: 1,
+    minWidth: 132,
+    padding: Spacing.three,
+  },
+  statValue: {
+    color: BrandColors.blue,
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  statLabel: {
+    color: BrandColors.muted,
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: Spacing.one,
+  },
+  feedbackState: {
+    alignItems: 'center',
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: Spacing.two,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.five,
+  },
+  feedbackText: {
+    color: BrandColors.muted,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  errorState: {
+    alignItems: 'flex-start',
+    borderColor: '#F0C5C5',
+  },
+  errorTitle: {
+    color: BrandColors.danger,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  errorText: {
+    color: BrandColors.muted,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  emptyState: {
+    alignItems: 'center',
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.five,
+  },
+  emptyAccent: {
+    backgroundColor: BrandColors.orange,
+    borderRadius: 999,
+    height: 5,
+    marginBottom: Spacing.three,
+    width: 72,
+  },
+  emptyTitle: {
+    color: BrandColors.ink,
+    fontSize: 20,
+    fontWeight: '800',
     textAlign: 'center',
   },
-  pressed: {
-    opacity: 0.7,
-  },
-  linkButton: {
-    flexDirection: 'row',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.five,
-    justifyContent: 'center',
-    gap: Spacing.one,
-    alignItems: 'center',
-  },
-  sectionsWrapper: {
-    gap: Spacing.five,
-    paddingHorizontal: Spacing.four,
-    paddingTop: Spacing.three,
-  },
-  collapsibleContent: {
-    alignItems: 'center',
-  },
-  imageTutorial: {
-    width: '100%',
-    aspectRatio: 296 / 171,
-    borderRadius: Spacing.three,
+  emptyText: {
+    color: BrandColors.muted,
+    fontSize: 14,
+    lineHeight: 21,
     marginTop: Spacing.two,
+    maxWidth: 420,
+    textAlign: 'center',
   },
-  imageReact: {
-    width: 100,
-    height: 100,
-    alignSelf: 'center',
+  list: {
+    gap: Spacing.three,
+  },
+  letterCard: {
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    gap: Spacing.three,
+    padding: Spacing.three,
+  },
+  letterHeader: {
+    alignItems: 'flex-start',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+    justifyContent: 'space-between',
+  },
+  letterTitleBlock: {
+    flexShrink: 1,
+    gap: Spacing.half,
+  },
+  letterNumber: {
+    color: BrandColors.ink,
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  letterDate: {
+    color: BrandColors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  statusBadge: {
+    backgroundColor: '#EEF0FA',
+    borderRadius: 999,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
+  },
+  statusBadgeDone: {
+    backgroundColor: '#EEF8F3',
+  },
+  statusBadgeText: {
+    color: BrandColors.blue,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  statusBadgeDoneText: {
+    color: BrandColors.success,
+  },
+  letterBody: {
+    gap: Spacing.one,
+  },
+  letterLine: {
+    color: BrandColors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  mediaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.two,
+  },
+  mediaChip: {
+    backgroundColor: BrandColors.surfaceSoft,
+    borderColor: BrandColors.line,
+    borderRadius: 999,
+    borderWidth: 1,
+    color: BrandColors.blue,
+    fontSize: 12,
+    fontWeight: '800',
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.one,
   },
 });

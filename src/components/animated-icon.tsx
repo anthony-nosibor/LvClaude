@@ -6,7 +6,7 @@ import { scheduleOnRN } from 'react-native-worklets';
 
 const INITIAL_SCALE_FACTOR = Dimensions.get('screen').height / 90;
 const DURATION = 600;
-const SPLASH_DURATION = 1200;
+const SPLASH_DURATION = 5000;
 const SPLASH_BACKGROUND = '#FFFFFF';
 const LOGO_RATIO = 1400 / 349;
 const SPLASH_LOGO_WIDTH = Math.min(Dimensions.get('screen').width - 32, 360);

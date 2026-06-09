@@ -5,7 +5,7 @@ import Animated, { Keyframe, Easing } from 'react-native-reanimated';
 
 import classes from './animated-icon.module.css';
 const DURATION = 300;
-const SPLASH_DURATION = 1200;
+const SPLASH_DURATION = 5000;
 const SPLASH_BACKGROUND = '#FFFFFF';
 const LOGO_RATIO = 1400 / 349;
 const SPLASH_LOGO_WIDTH = Math.min(Dimensions.get('screen').width - 32, 360);

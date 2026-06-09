@@ -7,6 +7,9 @@ web-build/
 # Temporary files
 *.log
 *.lock
+.env
+.env.local
+.env.*.local
 
 # Archives
 *.tar.gz
