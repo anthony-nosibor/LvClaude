@@ -17,6 +17,9 @@ import SignatureView from 'react-native-signature-canvas';
 import { BrandColors } from '@/constants/brand';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import {
+  uploadPdfToStorage,
+  uploadPhotoToStorage,
+  uploadSignatureToStorage,
   upsertLettreDeVoiture,
   type LettreDeVoitureStatus,
 } from '@/services/lettres-de-voiture';
@@ -48,6 +51,15 @@ function formatDate(date: Date) {
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type UploadedMedia = {
+  photoPath: string | null;
+  photoUrl: string | null;
+  signaturePath: string | null;
+  signatureUrl: string | null;
+  pdfLocalUri: string | null;
+  pdfPath: string | null;
+  pdfUrl: string | null;
+};
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error
@@ -134,6 +146,10 @@ export default function LettreDeVoitureScreen() {
   const [photo, setPhoto] = useState<string | null>(null);
   const [signature, setSignature] = useState<string | null>(null);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [isScrollEnabled, setIsScrollEnabled] = useState(true);
+  const [isTakingPicture, setIsTakingPicture] = useState(false);
+  const [cameraMessage, setCameraMessage] = useState('');
+  const [signatureMessage, setSignatureMessage] = useState('');
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveMessage, setSaveMessage] = useState('');
   const [savedDocumentId, setSavedDocumentId] = useState<string | null>(null);
@@ -158,8 +174,21 @@ export default function LettreDeVoitureScreen() {
   );
   const isSaving = saveState === 'saving';
   const saveButtonLabel = isSaving ? 'Sauvegarde...' : 'Sauvegarder';
+  const emptyUploadedMedia: UploadedMedia = {
+    photoPath: null,
+    photoUrl: null,
+    signaturePath: null,
+    signatureUrl: null,
+    pdfLocalUri: null,
+    pdfPath: null,
+    pdfUrl: null,
+  };
 
-  const buildPayload = (status: LettreDeVoitureStatus) => ({
+  const buildPayload = (
+    status: LettreDeVoitureStatus,
+    uploadedMedia: UploadedMedia = emptyUploadedMedia,
+    storageError: string | null = null
+  ) => ({
     documentNumber,
     createdAtIso: createdAt.toISOString(),
     expediteur: expediteur.trim(),
@@ -175,20 +204,80 @@ export default function LettreDeVoitureScreen() {
       hasPhoto: Boolean(photo),
       hasSignature: Boolean(signature),
       photoLocalUri: photo,
+      photoPath: uploadedMedia.photoPath,
+      photoUrl: uploadedMedia.photoUrl,
       signatureDataUrl: signature,
+      signaturePath: uploadedMedia.signaturePath,
+      signatureUrl: uploadedMedia.signatureUrl,
+      pdfLocalUri: uploadedMedia.pdfLocalUri,
+      pdfPath: uploadedMedia.pdfPath,
+      pdfUrl: uploadedMedia.pdfUrl,
     },
+    storageError,
   });
 
-  const saveLettre = async (status: LettreDeVoitureStatus = 'draft') => {
+  const uploadCurrentMedia = async ({
+    pdfBase64,
+    pdfLocalUri,
+  }: {
+    pdfBase64?: string | null;
+    pdfLocalUri?: string | null;
+  } = {}) => {
+    const uploadedMedia: UploadedMedia = { ...emptyUploadedMedia, pdfLocalUri: pdfLocalUri ?? null };
+    const errors: string[] = [];
+
+    if (photo) {
+      try {
+        const uploadedPhoto = await uploadPhotoToStorage(documentNumber, photo);
+        uploadedMedia.photoPath = uploadedPhoto.path;
+        uploadedMedia.photoUrl = uploadedPhoto.url;
+      } catch (error) {
+        errors.push(`photo: ${getErrorMessage(error)}`);
+      }
+    }
+
+    if (signature) {
+      try {
+        const uploadedSignature = await uploadSignatureToStorage(documentNumber, signature);
+        uploadedMedia.signaturePath = uploadedSignature.path;
+        uploadedMedia.signatureUrl = uploadedSignature.url;
+      } catch (error) {
+        errors.push(`signature: ${getErrorMessage(error)}`);
+      }
+    }
+
+    if (pdfBase64) {
+      try {
+        const uploadedPdf = await uploadPdfToStorage(documentNumber, pdfBase64);
+        uploadedMedia.pdfPath = uploadedPdf.path;
+        uploadedMedia.pdfUrl = uploadedPdf.url;
+      } catch (error) {
+        errors.push(`PDF: ${getErrorMessage(error)}`);
+      }
+    }
+
+    return {
+      uploadedMedia,
+      storageError: errors.length ? `Storage incomplet (${errors.join(' | ')})` : null,
+    };
+  };
+
+  const saveLettre = async (
+    status: LettreDeVoitureStatus = 'draft',
+    uploadedMedia: UploadedMedia = emptyUploadedMedia,
+    storageError: string | null = null
+  ) => {
     setSaveState('saving');
     setSaveMessage('');
 
     try {
-      const id = await upsertLettreDeVoiture(buildPayload(status));
+      const id = await upsertLettreDeVoiture(buildPayload(status, uploadedMedia, storageError));
       setSavedDocumentId(id);
       setSaveState('saved');
       setSaveMessage(
-        status === 'pdf_generated'
+        storageError
+          ? `Document sauvegardé, mais ${storageError}`
+          : status === 'pdf_generated'
           ? 'Document sauvegardé dans Firebase.'
           : 'Brouillon sauvegardé dans Firebase.'
       );
@@ -201,35 +290,73 @@ export default function LettreDeVoitureScreen() {
   };
 
   const askForCameraPermission = async () => {
+    setCameraMessage('');
     const { status } = await Camera.requestCameraPermissionsAsync();
     setHasPermission(status === 'granted');
+
+    if (status !== 'granted') {
+      setCameraMessage("L'accès à la caméra a été refusé.");
+    }
   };
 
   const takePicture = async () => {
-    const captured = await cameraRef.current?.takePictureAsync({ quality: 0.82 });
-    if (captured?.uri) {
-      setPhoto(captured.uri);
+    if (isTakingPicture) return;
+
+    setIsTakingPicture(true);
+    setCameraMessage('');
+
+    try {
+      const captured = await cameraRef.current?.takePictureAsync({ quality: 0.82 });
+      if (captured?.uri) {
+        setPhoto(captured.uri);
+      } else {
+        setCameraMessage("La photo n'a pas pu être capturée.");
+      }
+    } catch (error) {
+      setCameraMessage(getErrorMessage(error));
+    } finally {
+      setIsTakingPicture(false);
     }
   };
 
   const handleSignature = (signatureValue: string) => {
     setSignature(signatureValue);
+    setSignatureMessage('Signature validée.');
   };
 
   const handleClearSignature = () => {
     signatureRef.current?.clearSignature();
     setSignature(null);
+    setSignatureMessage('');
   };
 
   const handleConfirmSignature = () => {
+    setSignatureMessage('');
     signatureRef.current?.readSignature();
+  };
+
+  const handleEmptySignature = () => {
+    setSignature(null);
+    setSignatureMessage('Signez dans le cadre avant de valider.');
+  };
+
+  const handleSignatureError = (error: unknown) => {
+    setSignatureMessage(getErrorMessage(error));
+    setIsScrollEnabled(true);
+  };
+
+  const handleSaveDraft = async () => {
+    if (isSaving) return;
+
+    const { uploadedMedia, storageError } = await uploadCurrentMedia();
+    await saveLettre('draft', uploadedMedia, storageError);
   };
 
   const generatePdf = async () => {
     if (!canGeneratePdf || isSaving) return;
 
-    const saved = await saveLettre('pdf_generated');
-    if (!saved) return;
+    setSaveState('saving');
+    setSaveMessage('Préparation du PDF...');
 
     const logoUri = Image.resolveAssetSource(require('@/assets/images/splash-logo.png')).uri;
     const rows = [
@@ -381,7 +508,25 @@ export default function LettreDeVoitureScreen() {
       </html>
     `;
 
-    await Print.printAsync({ html });
+    try {
+      const pdfFile = await Print.printToFileAsync({ html, base64: true });
+      const { uploadedMedia, storageError } = await uploadCurrentMedia({
+        pdfBase64: pdfFile.base64,
+        pdfLocalUri: pdfFile.uri,
+      });
+      const saved = await saveLettre('pdf_generated', uploadedMedia, storageError);
+
+      if (!saved) return;
+
+      if (pdfFile.uri) {
+        await Print.printAsync({ uri: pdfFile.uri });
+      } else {
+        await Print.printAsync({ html });
+      }
+    } catch (error) {
+      setSaveState('error');
+      setSaveMessage(getErrorMessage(error));
+    }
   };
 
   const goNext = () => setCurrentStep((step) => Math.min(step + 1, steps.length - 1));
@@ -491,15 +636,27 @@ export default function LettreDeVoitureScreen() {
             {hasPermission && !photo && (
               <View style={styles.cameraCard}>
                 <CameraView style={styles.cameraPreview} ref={cameraRef} />
-                <ActionButton label="Prendre une photo" onPress={takePicture} />
+                <ActionButton
+                  label={isTakingPicture ? 'Capture...' : 'Prendre une photo'}
+                  onPress={takePicture}
+                  disabled={isTakingPicture}
+                />
               </View>
             )}
             {photo && (
               <View style={styles.photoCard}>
                 <Image source={{ uri: photo }} style={styles.photoPreview} />
-                <ActionButton label="Reprendre la photo" onPress={() => setPhoto(null)} variant="secondary" />
+                <ActionButton
+                  label="Reprendre la photo"
+                  onPress={() => {
+                    setPhoto(null);
+                    setCameraMessage('');
+                  }}
+                  variant="secondary"
+                />
               </View>
             )}
+            {cameraMessage && <Text style={styles.inlineErrorText}>{cameraMessage}</Text>}
           </View>
         );
       case 4:
@@ -510,6 +667,13 @@ export default function LettreDeVoitureScreen() {
               <SignatureView
                 ref={signatureRef}
                 onOK={handleSignature}
+                onEmpty={handleEmptySignature}
+                onError={handleSignatureError}
+                onBegin={() => {
+                  setIsScrollEnabled(false);
+                  setSignatureMessage('');
+                }}
+                onEnd={() => setIsScrollEnabled(true)}
                 autoClear={false}
                 webStyle={`
                   .m-signature-pad { box-shadow: none; border: none; }
@@ -523,6 +687,15 @@ export default function LettreDeVoitureScreen() {
               <ActionButton label="Effacer" onPress={handleClearSignature} variant="danger" />
               <ActionButton label="Valider la signature" onPress={handleConfirmSignature} />
             </View>
+            {signatureMessage && (
+              <Text
+                style={[
+                  styles.inlineStatusText,
+                  !signature && styles.inlineErrorText,
+                ]}>
+                {signatureMessage}
+              </Text>
+            )}
             {signature && (
               <View style={styles.signaturePreviewCard}>
                 <Text style={styles.previewLabel}>Signature enregistrée</Text>
@@ -561,6 +734,7 @@ export default function LettreDeVoitureScreen() {
     <View style={styles.screen}>
       <SafeAreaView style={styles.safeArea}>
         <ScrollView
+          scrollEnabled={isScrollEnabled}
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}>
           <View style={styles.topBar}>
@@ -612,7 +786,9 @@ export default function LettreDeVoitureScreen() {
                   styles.syncNoticeText,
                   saveState === 'error' && styles.syncNoticeErrorText,
                 ]}>
-                {saveState === 'saving' ? 'Sauvegarde Firebase en cours...' : saveMessage}
+                {saveState === 'saving'
+                  ? saveMessage || 'Sauvegarde Firebase en cours...'
+                  : saveMessage}
               </Text>
             </View>
           )}
@@ -626,7 +802,7 @@ export default function LettreDeVoitureScreen() {
             />
             <ActionButton
               label={saveButtonLabel}
-              onPress={() => saveLettre('draft')}
+              onPress={handleSaveDraft}
               variant="secondary"
               disabled={isSaving}
             />
@@ -847,6 +1023,18 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     marginBottom: Spacing.two,
+  },
+  inlineStatusText: {
+    color: BrandColors.success,
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 19,
+  },
+  inlineErrorText: {
+    color: BrandColors.danger,
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 19,
   },
   signaturePreview: {
     height: 120,

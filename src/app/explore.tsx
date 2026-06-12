@@ -156,7 +156,15 @@ export default function HistoryScreen() {
                     <Text style={styles.mediaChip}>
                       {lettre.media.hasSignature ? 'Signature validée' : 'Sans signature'}
                     </Text>
+                    <Text style={styles.mediaChip}>
+                      {lettre.media.photoUrl || lettre.media.signatureUrl || lettre.media.pdfUrl
+                        ? 'Fichiers cloud'
+                        : 'Fichiers locaux'}
+                    </Text>
                   </View>
+                  {lettre.storageError && (
+                    <Text style={styles.storageWarning}>{lettre.storageError}</Text>
+                  )}
                 </View>
               ))}
             </View>
@@ -361,5 +369,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     paddingHorizontal: Spacing.two,
     paddingVertical: Spacing.one,
+  },
+  storageWarning: {
+    color: BrandColors.danger,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 18,
   },
 });
