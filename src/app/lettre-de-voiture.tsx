@@ -67,6 +67,28 @@ function getErrorMessage(error: unknown) {
     : "Une erreur inconnue a bloqué la sauvegarde Firebase.";
 }
 
+function appendStorageError(currentError: string | null, nextError: string) {
+  return currentError ? `${currentError} | ${nextError}` : nextError;
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+  });
+}
+
 function ActionButton({
   label,
   onPress,
@@ -228,7 +250,11 @@ export default function LettreDeVoitureScreen() {
 
     if (photo) {
       try {
-        const uploadedPhoto = await uploadPhotoToStorage(documentNumber, photo);
+        const uploadedPhoto = await withTimeout(
+          uploadPhotoToStorage(documentNumber, photo),
+          12000,
+          'upload photo trop long'
+        );
         uploadedMedia.photoPath = uploadedPhoto.path;
         uploadedMedia.photoUrl = uploadedPhoto.url;
       } catch (error) {
@@ -238,7 +264,11 @@ export default function LettreDeVoitureScreen() {
 
     if (signature) {
       try {
-        const uploadedSignature = await uploadSignatureToStorage(documentNumber, signature);
+        const uploadedSignature = await withTimeout(
+          uploadSignatureToStorage(documentNumber, signature),
+          12000,
+          'upload signature trop long'
+        );
         uploadedMedia.signaturePath = uploadedSignature.path;
         uploadedMedia.signatureUrl = uploadedSignature.url;
       } catch (error) {
@@ -248,7 +278,11 @@ export default function LettreDeVoitureScreen() {
 
     if (pdfBase64) {
       try {
-        const uploadedPdf = await uploadPdfToStorage(documentNumber, pdfBase64);
+        const uploadedPdf = await withTimeout(
+          uploadPdfToStorage(documentNumber, pdfBase64),
+          12000,
+          'upload PDF trop long'
+        );
         uploadedMedia.pdfPath = uploadedPdf.path;
         uploadedMedia.pdfUrl = uploadedPdf.url;
       } catch (error) {
@@ -348,6 +382,12 @@ export default function LettreDeVoitureScreen() {
   const handleSaveDraft = async () => {
     if (isSaving) return;
 
+    const saved = await saveLettre('draft');
+    if (!saved) return;
+
+    setSaveState('saving');
+    setSaveMessage('Archivage des fichiers...');
+
     const { uploadedMedia, storageError } = await uploadCurrentMedia();
     await saveLettre('draft', uploadedMedia, storageError);
   };
@@ -356,7 +396,7 @@ export default function LettreDeVoitureScreen() {
     if (!canGeneratePdf || isSaving) return;
 
     setSaveState('saving');
-    setSaveMessage('Préparation du PDF...');
+    setSaveMessage('Sauvegarde Firebase...');
 
     const logoUri = Image.resolveAssetSource(require('@/assets/images/splash-logo.png')).uri;
     const rows = [
@@ -508,24 +548,90 @@ export default function LettreDeVoitureScreen() {
       </html>
     `;
 
+    const saved = await saveLettre('pdf_generated');
+
+    if (!saved) return;
+
+    setSaveState('saving');
+    setSaveMessage('Archivage des fichiers...');
+
+    const { uploadedMedia, storageError } = await uploadCurrentMedia();
+    await saveLettre('pdf_generated', uploadedMedia, storageError);
+
+    let printablePdfUri: string | null = null;
+    let finalUploadedMedia = uploadedMedia;
+    let finalStorageError = storageError;
+
     try {
-      const pdfFile = await Print.printToFileAsync({ html, base64: true });
-      const { uploadedMedia, storageError } = await uploadCurrentMedia({
-        pdfBase64: pdfFile.base64,
-        pdfLocalUri: pdfFile.uri,
-      });
-      const saved = await saveLettre('pdf_generated', uploadedMedia, storageError);
+      setSaveState('saving');
+      setSaveMessage('Archivage du PDF...');
 
-      if (!saved) return;
+      const pdfFile = await withTimeout(
+        Print.printToFileAsync({ html, base64: true }),
+        12000,
+        'génération PDF trop longue'
+      );
 
-      if (pdfFile.uri) {
-        await Print.printAsync({ uri: pdfFile.uri });
+      printablePdfUri = pdfFile.uri;
+
+      if (pdfFile.base64) {
+        try {
+          const uploadedPdf = await withTimeout(
+            uploadPdfToStorage(documentNumber, pdfFile.base64),
+            12000,
+            'upload PDF trop long'
+          );
+
+          finalUploadedMedia = {
+            ...uploadedMedia,
+            pdfLocalUri: pdfFile.uri,
+            pdfPath: uploadedPdf.path,
+            pdfUrl: uploadedPdf.url,
+          };
+        } catch (error) {
+          finalUploadedMedia = {
+            ...uploadedMedia,
+            pdfLocalUri: pdfFile.uri,
+          };
+          finalStorageError = appendStorageError(
+            finalStorageError,
+            `PDF: ${getErrorMessage(error)}`
+          );
+        }
+
+        await saveLettre('pdf_generated', finalUploadedMedia, finalStorageError);
+      }
+    } catch (error) {
+      finalStorageError = appendStorageError(
+        finalStorageError,
+        `PDF: ${getErrorMessage(error)}`
+      );
+      await saveLettre('pdf_generated', finalUploadedMedia, finalStorageError);
+    }
+
+    try {
+      setSaveState('saving');
+      setSaveMessage('Ouverture du PDF...');
+
+      if (printablePdfUri) {
+        await Print.printAsync({ uri: printablePdfUri });
       } else {
         await Print.printAsync({ html });
       }
+
+      setSaveState('saved');
+      setSaveMessage(
+        finalStorageError
+          ? `Document sauvegardé, mais ${finalStorageError}`
+          : 'Document sauvegardé dans Firebase.'
+      );
     } catch (error) {
       setSaveState('error');
-      setSaveMessage(getErrorMessage(error));
+      setSaveMessage(
+        `Document sauvegardé dans Firebase, mais le PDF ne s'est pas ouvert: ${getErrorMessage(
+          error
+        )}`
+      );
     }
   };
 
