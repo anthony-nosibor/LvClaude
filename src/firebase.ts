@@ -10,7 +10,7 @@ const firebaseConfig = {
     process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ?? 'lettre-de-voiture-ntransports',
   storageBucket:
     process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ??
-    'lettre-de-voiture-ntransports.appspot.com',
+    'lettre-de-voiture-ntransports.firebasestorage.app',
   messagingSenderId:
     process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? '195528971208',
   appId:

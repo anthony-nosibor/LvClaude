@@ -259,6 +259,28 @@ async function writeSignatureToCache(documentNumber: string, signatureDataUrl: s
   return fileUri;
 }
 
+function sanitizeCacheFileName(value: string) {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+async function writePdfToCache(documentNumber: string, pdfBase64: string) {
+  const cacheDirectory = FileSystem.cacheDirectory;
+
+  if (!cacheDirectory) {
+    throw new Error('Cache local indisponible pour préparer le PDF.');
+  }
+
+  const fileUri = `${cacheDirectory}${sanitizeCacheFileName(documentNumber)}-document.pdf`;
+
+  await FileSystem.writeAsStringAsync(fileUri, pdfBase64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  await assertReadableFile(fileUri);
+
+  return fileUri;
+}
+
 export async function uploadPhotoToStorage(documentNumber: string, photoUri: string) {
   return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/photo.jpg`,
@@ -277,10 +299,16 @@ export async function uploadSignatureToStorage(documentNumber: string, signature
   );
 }
 
-export async function uploadPdfToStorage(documentNumber: string, pdfUri: string) {
+export async function uploadPdfToStorage(
+  documentNumber: string,
+  pdfUri: string,
+  pdfBase64?: string
+) {
+  const uploadUri = pdfBase64 ? await writePdfToCache(documentNumber, pdfBase64) : pdfUri;
+
   return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/document.pdf`,
-    pdfUri,
+    uploadUri,
     'application/pdf'
   );
 }

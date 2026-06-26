@@ -636,7 +636,7 @@ export default function LettreDeVoitureScreen() {
       setSaveMessage('Archivage du PDF...');
 
       const pdfFile = await withTimeout(
-        Print.printToFileAsync({ html }),
+        Print.printToFileAsync({ html, base64: true }),
         PDF_GENERATION_TIMEOUT_MS,
         'génération PDF trop longue'
       );
@@ -646,7 +646,7 @@ export default function LettreDeVoitureScreen() {
       if (pdfFile.uri) {
         try {
           const uploadedPdf = await withTimeout(
-            uploadPdfToStorage(documentNumber, pdfFile.uri),
+            uploadPdfToStorage(documentNumber, pdfFile.uri, pdfFile.base64),
             MEDIA_UPLOAD_TIMEOUT_MS,
             'upload PDF trop long'
           );
@@ -678,7 +678,7 @@ export default function LettreDeVoitureScreen() {
         setSaveMessage('Génération du PDF allégé...');
 
         const fallbackPdfFile = await withTimeout(
-          Print.printToFileAsync({ html: fallbackHtml }),
+          Print.printToFileAsync({ html: fallbackHtml, base64: true }),
           PDF_FALLBACK_TIMEOUT_MS,
           'génération PDF allégé trop longue'
         );
@@ -697,7 +697,7 @@ export default function LettreDeVoitureScreen() {
         if (fallbackPdfFile.uri) {
           try {
             const uploadedFallbackPdf = await withTimeout(
-              uploadPdfToStorage(documentNumber, fallbackPdfFile.uri),
+              uploadPdfToStorage(documentNumber, fallbackPdfFile.uri, fallbackPdfFile.base64),
               MEDIA_UPLOAD_TIMEOUT_MS,
               'upload PDF allégé trop long'
             );
