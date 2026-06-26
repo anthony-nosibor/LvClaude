@@ -11,16 +11,9 @@ import {
   type DocumentData,
   type Unsubscribe,
 } from 'firebase/firestore';
-import {
-  getDownloadURL,
-  ref,
-  uploadBytes,
-  uploadString,
-  type UploadMetadata,
-} from 'firebase/storage';
+import * as FileSystem from 'expo-file-system/legacy';
 
-import { db } from '@/firebase';
-import { storage } from '@/firebase';
+import { app, db } from '@/firebase';
 
 const COLLECTION_NAME = 'lettresDeVoiture';
 
@@ -153,61 +146,142 @@ function fromFirestoreDoc(id: string, data: DocumentData): LettreDeVoitureRecord
   };
 }
 
-async function uriToBlob(uri: string) {
-  const response = await fetch(uri);
+function getStorageBucket() {
+  const bucket =
+    process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? app.options.storageBucket;
 
-  if (!response.ok) {
-    throw new Error(`Impossible de lire le fichier local: ${response.status}`);
+  if (!bucket) {
+    throw new Error('Bucket Firebase Storage non configuré.');
   }
 
-  return response.blob();
+  return bucket;
 }
 
-async function uploadAndReadUrl(
-  storagePath: string,
-  data: Blob | string,
-  metadata: UploadMetadata,
-  format?: 'base64' | 'data_url'
-) {
-  const storageRef = ref(storage, storagePath);
+function getPublicStorageUrl(bucket: string, storagePath: string) {
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
+    bucket
+  )}/o/${encodeURIComponent(storagePath)}?alt=media`;
+}
 
-  if (typeof data === 'string') {
-    await uploadString(storageRef, data, format, metadata);
-  } else {
-    await uploadBytes(storageRef, data, metadata);
+function getUploadUrl(bucket: string, storagePath: string) {
+  const params = new URLSearchParams({
+    uploadType: 'media',
+    name: storagePath,
+  });
+
+  return `https://firebasestorage.googleapis.com/v0/b/${encodeURIComponent(
+    bucket
+  )}/o?${params.toString()}`;
+}
+
+function readStorageError(status: number, body: string, bucket: string) {
+  let message = body;
+
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: string } };
+    message = parsed.error?.message ?? body;
+  } catch {
+    message = body;
+  }
+
+  if (status === 404) {
+    return `Bucket Storage introuvable (${bucket}). Active Storage ou corrige EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET. Réponse: ${message}`;
+  }
+
+  if (status === 401 || status === 403) {
+    return `Storage refuse l'accès (${status}). Vérifie les règles Firebase Storage. Réponse: ${message}`;
+  }
+
+  return `Storage HTTP ${status}: ${message}`;
+}
+
+async function assertReadableFile(fileUri: string) {
+  const info = await FileSystem.getInfoAsync(fileUri);
+
+  if (!info.exists) {
+    throw new Error(`Fichier local introuvable: ${fileUri}`);
+  }
+}
+
+async function uploadLocalFileToStorage(
+  storagePath: string,
+  fileUri: string,
+  contentType: string
+) {
+  const bucket = getStorageBucket();
+  await assertReadableFile(fileUri);
+
+  const result = await FileSystem.uploadAsync(getUploadUrl(bucket, storagePath), fileUri, {
+    headers: {
+      'Content-Type': contentType,
+    },
+    httpMethod: 'POST',
+    uploadType: FileSystem.FileSystemUploadType.BINARY_CONTENT,
+  });
+
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(readStorageError(result.status, result.body, bucket));
   }
 
   return {
     path: storagePath,
-    url: await getDownloadURL(storageRef),
+    url: getPublicStorageUrl(bucket, storagePath),
   };
 }
 
-export async function uploadPhotoToStorage(documentNumber: string, photoUri: string) {
-  const photoBlob = await uriToBlob(photoUri);
+function parseSignatureDataUrl(signatureDataUrl: string) {
+  const match = signatureDataUrl.match(/^data:(image\/png|image\/jpeg)?;base64,(.*)$/);
 
-  return uploadAndReadUrl(
+  if (!match) {
+    throw new Error('Format de signature invalide.');
+  }
+
+  return {
+    base64: match[2],
+    contentType: match[1] ?? 'image/png',
+  };
+}
+
+async function writeSignatureToCache(documentNumber: string, signatureDataUrl: string) {
+  const cacheDirectory = FileSystem.cacheDirectory;
+
+  if (!cacheDirectory) {
+    throw new Error('Cache local indisponible pour préparer la signature.');
+  }
+
+  const { base64 } = parseSignatureDataUrl(signatureDataUrl);
+  const fileUri = `${cacheDirectory}${documentNumber}-signature.png`;
+
+  await FileSystem.writeAsStringAsync(fileUri, base64, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
+
+  return fileUri;
+}
+
+export async function uploadPhotoToStorage(documentNumber: string, photoUri: string) {
+  return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/photo.jpg`,
-    photoBlob,
-    { contentType: 'image/jpeg' }
+    photoUri,
+    'image/jpeg'
   );
 }
 
 export async function uploadSignatureToStorage(documentNumber: string, signatureDataUrl: string) {
-  return uploadAndReadUrl(
+  const signatureFileUri = await writeSignatureToCache(documentNumber, signatureDataUrl);
+
+  return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/signature.png`,
-    signatureDataUrl,
-    { contentType: 'image/png' },
-    'data_url'
+    signatureFileUri,
+    'image/png'
   );
 }
 
-export async function uploadPdfToStorage(documentNumber: string, pdfBase64: string) {
-  return uploadAndReadUrl(
+export async function uploadPdfToStorage(documentNumber: string, pdfUri: string) {
+  return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/document.pdf`,
-    pdfBase64,
-    { contentType: 'application/pdf' },
-    'base64'
+    pdfUri,
+    'application/pdf'
   );
 }
 

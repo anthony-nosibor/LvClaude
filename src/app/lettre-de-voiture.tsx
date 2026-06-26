@@ -33,6 +33,10 @@ const steps = [
   { title: 'PDF', caption: 'Document final' },
 ] as const;
 
+const MEDIA_UPLOAD_TIMEOUT_MS = 12000;
+const PDF_GENERATION_TIMEOUT_MS = 30000;
+const PDF_FALLBACK_TIMEOUT_MS = 15000;
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, '&amp;')
@@ -239,10 +243,8 @@ export default function LettreDeVoitureScreen() {
   });
 
   const uploadCurrentMedia = async ({
-    pdfBase64,
     pdfLocalUri,
   }: {
-    pdfBase64?: string | null;
     pdfLocalUri?: string | null;
   } = {}) => {
     const uploadedMedia: UploadedMedia = { ...emptyUploadedMedia, pdfLocalUri: pdfLocalUri ?? null };
@@ -252,7 +254,7 @@ export default function LettreDeVoitureScreen() {
       try {
         const uploadedPhoto = await withTimeout(
           uploadPhotoToStorage(documentNumber, photo),
-          12000,
+          MEDIA_UPLOAD_TIMEOUT_MS,
           'upload photo trop long'
         );
         uploadedMedia.photoPath = uploadedPhoto.path;
@@ -266,7 +268,7 @@ export default function LettreDeVoitureScreen() {
       try {
         const uploadedSignature = await withTimeout(
           uploadSignatureToStorage(documentNumber, signature),
-          12000,
+          MEDIA_UPLOAD_TIMEOUT_MS,
           'upload signature trop long'
         );
         uploadedMedia.signaturePath = uploadedSignature.path;
@@ -276,11 +278,11 @@ export default function LettreDeVoitureScreen() {
       }
     }
 
-    if (pdfBase64) {
+    if (pdfLocalUri) {
       try {
         const uploadedPdf = await withTimeout(
-          uploadPdfToStorage(documentNumber, pdfBase64),
-          12000,
+          uploadPdfToStorage(documentNumber, pdfLocalUri),
+          MEDIA_UPLOAD_TIMEOUT_MS,
           'upload PDF trop long'
         );
         uploadedMedia.pdfPath = uploadedPdf.path;
@@ -470,7 +472,7 @@ export default function LettreDeVoitureScreen() {
               border: 1px solid #DEE2EF;
               border-radius: 8px;
               flex: 1;
-              min-height: 180px;
+              min-height: 132px;
               padding: 14px;
             }
             .media-title {
@@ -479,12 +481,6 @@ export default function LettreDeVoitureScreen() {
               font-weight: 800;
               margin-bottom: 12px;
               text-transform: uppercase;
-            }
-            .photo {
-              border-radius: 6px;
-              max-height: 220px;
-              object-fit: cover;
-              width: 100%;
             }
             .signature {
               max-height: 150px;
@@ -495,6 +491,14 @@ export default function LettreDeVoitureScreen() {
               color: #9AA0B8;
               font-size: 13px;
               padding-top: 48px;
+              text-align: center;
+            }
+            .attachment {
+              color: #20243A;
+              font-size: 14px;
+              font-weight: 700;
+              line-height: 20px;
+              padding-top: 28px;
               text-align: center;
             }
             .footer {
@@ -528,7 +532,7 @@ export default function LettreDeVoitureScreen() {
               <div class="media-title">Photo marchandise</div>
               ${
                 photo
-                  ? `<img class="photo" src="${photo}" />`
+                  ? '<div class="attachment">Photo jointe et archivée séparément</div>'
                   : '<div class="empty">Aucune photo jointe</div>'
               }
             </div>
@@ -548,6 +552,70 @@ export default function LettreDeVoitureScreen() {
       </html>
     `;
 
+    const fallbackHtml = `
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            body {
+              color: #20243A;
+              font-family: Arial, sans-serif;
+              margin: 0;
+              padding: 28px;
+            }
+            h1 {
+              color: #33386F;
+              font-size: 24px;
+              margin: 0 0 14px;
+            }
+            .meta {
+              border-bottom: 3px solid #F47F20;
+              color: #56599C;
+              font-size: 12px;
+              font-weight: 700;
+              margin-bottom: 18px;
+              padding-bottom: 12px;
+            }
+            table {
+              border-collapse: collapse;
+              width: 100%;
+            }
+            td {
+              border-bottom: 1px solid #DEE2EF;
+              font-size: 13px;
+              padding: 10px 8px;
+              vertical-align: top;
+            }
+            td:first-child {
+              color: #69708A;
+              font-weight: 700;
+              width: 36%;
+            }
+            .footer {
+              color: #69708A;
+              font-size: 11px;
+              margin-top: 24px;
+            }
+          </style>
+        </head>
+        <body>
+          <h1>Lettre de voiture</h1>
+          <div class="meta">${escapeHtml(documentNumber)} - ${escapeHtml(formatDate(createdAt))}</div>
+          <table>
+            ${rows
+              .map(
+                ([label, value]) =>
+                  `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`
+              )
+              .join('')}
+            <tr><td>Photo</td><td>${photo ? 'Photo jointe et archivée séparément' : 'Aucune photo jointe'}</td></tr>
+            <tr><td>Signature</td><td>${signature ? 'Signature validée' : 'Signature manquante'}</td></tr>
+          </table>
+          <div class="footer">NohaTransport - Le service qui facilite votre quotidien</div>
+        </body>
+      </html>
+    `;
+
     const saved = await saveLettre('pdf_generated');
 
     if (!saved) return;
@@ -559,6 +627,7 @@ export default function LettreDeVoitureScreen() {
     await saveLettre('pdf_generated', uploadedMedia, storageError);
 
     let printablePdfUri: string | null = null;
+    let htmlForPrint = html;
     let finalUploadedMedia = uploadedMedia;
     let finalStorageError = storageError;
 
@@ -567,18 +636,18 @@ export default function LettreDeVoitureScreen() {
       setSaveMessage('Archivage du PDF...');
 
       const pdfFile = await withTimeout(
-        Print.printToFileAsync({ html, base64: true }),
-        12000,
+        Print.printToFileAsync({ html }),
+        PDF_GENERATION_TIMEOUT_MS,
         'génération PDF trop longue'
       );
 
       printablePdfUri = pdfFile.uri;
 
-      if (pdfFile.base64) {
+      if (pdfFile.uri) {
         try {
           const uploadedPdf = await withTimeout(
-            uploadPdfToStorage(documentNumber, pdfFile.base64),
-            12000,
+            uploadPdfToStorage(documentNumber, pdfFile.uri),
+            MEDIA_UPLOAD_TIMEOUT_MS,
             'upload PDF trop long'
           );
 
@@ -602,10 +671,57 @@ export default function LettreDeVoitureScreen() {
         await saveLettre('pdf_generated', finalUploadedMedia, finalStorageError);
       }
     } catch (error) {
-      finalStorageError = appendStorageError(
-        finalStorageError,
-        `PDF: ${getErrorMessage(error)}`
-      );
+      const primaryPdfError = getErrorMessage(error);
+
+      try {
+        setSaveState('saving');
+        setSaveMessage('Génération du PDF allégé...');
+
+        const fallbackPdfFile = await withTimeout(
+          Print.printToFileAsync({ html: fallbackHtml }),
+          PDF_FALLBACK_TIMEOUT_MS,
+          'génération PDF allégé trop longue'
+        );
+
+        printablePdfUri = fallbackPdfFile.uri;
+        htmlForPrint = fallbackHtml;
+        finalUploadedMedia = {
+          ...uploadedMedia,
+          pdfLocalUri: fallbackPdfFile.uri,
+        };
+        finalStorageError = appendStorageError(
+          finalStorageError,
+          `PDF principal: ${primaryPdfError}`
+        );
+
+        if (fallbackPdfFile.uri) {
+          try {
+            const uploadedFallbackPdf = await withTimeout(
+              uploadPdfToStorage(documentNumber, fallbackPdfFile.uri),
+              MEDIA_UPLOAD_TIMEOUT_MS,
+              'upload PDF allégé trop long'
+            );
+
+            finalUploadedMedia = {
+              ...finalUploadedMedia,
+              pdfPath: uploadedFallbackPdf.path,
+              pdfUrl: uploadedFallbackPdf.url,
+            };
+          } catch (uploadFallbackError) {
+            finalStorageError = appendStorageError(
+              finalStorageError,
+              `PDF allégé: ${getErrorMessage(uploadFallbackError)}`
+            );
+          }
+        }
+      } catch (fallbackError) {
+        htmlForPrint = fallbackHtml;
+        finalStorageError = appendStorageError(
+          finalStorageError,
+          `PDF: ${primaryPdfError}; PDF allégé: ${getErrorMessage(fallbackError)}`
+        );
+      }
+
       await saveLettre('pdf_generated', finalUploadedMedia, finalStorageError);
     }
 
@@ -616,7 +732,7 @@ export default function LettreDeVoitureScreen() {
       if (printablePdfUri) {
         await Print.printAsync({ uri: printablePdfUri });
       } else {
-        await Print.printAsync({ html });
+        await Print.printAsync({ html: htmlForPrint });
       }
 
       setSaveState('saved');
