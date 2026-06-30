@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Image,
   Pressable,
@@ -17,6 +17,11 @@ import SignatureView from 'react-native-signature-canvas';
 import { BrandColors } from '@/constants/brand';
 import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
 import {
+  enqueueFieldDocument,
+  listPendingFieldDocuments,
+  preparePdfForStorage,
+  removePendingFieldDocument,
+  syncAllPendingFieldDocuments,
   uploadPdfToStorage,
   uploadPhotoToStorage,
   uploadSignatureToStorage,
@@ -179,6 +184,9 @@ export default function LettreDeVoitureScreen() {
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveMessage, setSaveMessage] = useState('');
   const [savedDocumentId, setSavedDocumentId] = useState<string | null>(null);
+  const [pendingFieldCount, setPendingFieldCount] = useState(0);
+  const [fieldModeMessage, setFieldModeMessage] = useState('');
+  const [isSyncingFieldQueue, setIsSyncingFieldQueue] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
   const signatureRef = useRef<any>(null);
   const createdAt = useMemo(() => new Date(), []);
@@ -200,6 +208,7 @@ export default function LettreDeVoitureScreen() {
   );
   const isSaving = saveState === 'saving';
   const saveButtonLabel = isSaving ? 'Sauvegarde...' : 'Sauvegarder';
+  const fieldRetryButtonLabel = isSyncingFieldQueue ? 'Reprise...' : 'Réessayer';
   const emptyUploadedMedia: UploadedMedia = {
     photoPath: null,
     photoUrl: null,
@@ -209,6 +218,25 @@ export default function LettreDeVoitureScreen() {
     pdfPath: null,
     pdfUrl: null,
   };
+
+  const refreshPendingFieldCount = useCallback(async () => {
+    const pendingDocuments = await listPendingFieldDocuments();
+    setPendingFieldCount(pendingDocuments.length);
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    listPendingFieldDocuments().then((pendingDocuments) => {
+      if (isMounted) {
+        setPendingFieldCount(pendingDocuments.length);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const buildPayload = (
     status: LettreDeVoitureStatus,
@@ -305,10 +333,19 @@ export default function LettreDeVoitureScreen() {
   ) => {
     setSaveState('saving');
     setSaveMessage('');
+    const payload = buildPayload(status, uploadedMedia, storageError);
 
     try {
-      const id = await upsertLettreDeVoiture(buildPayload(status, uploadedMedia, storageError));
+      const id = await upsertLettreDeVoiture(payload);
       setSavedDocumentId(id);
+
+      if (storageError) {
+        await enqueueFieldDocument(payload);
+      } else {
+        await removePendingFieldDocument(documentNumber);
+      }
+
+      await refreshPendingFieldCount();
       setSaveState('saved');
       setSaveMessage(
         storageError
@@ -319,9 +356,51 @@ export default function LettreDeVoitureScreen() {
       );
       return true;
     } catch (error) {
-      setSaveState('error');
-      setSaveMessage(getErrorMessage(error));
-      return false;
+      const localMessage = `Firebase à synchroniser: ${getErrorMessage(error)}`;
+      const localPayload = buildPayload(
+        status,
+        uploadedMedia,
+        appendStorageError(storageError, localMessage)
+      );
+
+      try {
+        await enqueueFieldDocument(localPayload);
+        await refreshPendingFieldCount();
+        setSavedDocumentId(documentNumber);
+        setSaveState('saved');
+        setSaveMessage('Mode terrain: document conservé localement, synchronisation à relancer.');
+        return true;
+      } catch (queueError) {
+        setSaveState('error');
+        setSaveMessage(getErrorMessage(queueError));
+        return false;
+      }
+    }
+  };
+
+  const handleRetryFieldQueue = async () => {
+    if (isSaving || isSyncingFieldQueue) return;
+
+    setIsSyncingFieldQueue(true);
+    setFieldModeMessage('Reprise des documents en attente...');
+
+    try {
+      const summary = await syncAllPendingFieldDocuments();
+      await refreshPendingFieldCount();
+
+      if (summary.pending > 0) {
+        setFieldModeMessage(
+          `${summary.synced}/${summary.attempted} repris, ${summary.pending} encore en attente.`
+        );
+      } else if (summary.attempted === 0) {
+        setFieldModeMessage('Aucun document en attente.');
+      } else {
+        setFieldModeMessage('Tous les documents en attente sont synchronisés.');
+      }
+    } catch (error) {
+      setFieldModeMessage(getErrorMessage(error));
+    } finally {
+      setIsSyncingFieldQueue(false);
     }
   };
 
@@ -644,23 +723,26 @@ export default function LettreDeVoitureScreen() {
       printablePdfUri = pdfFile.uri;
 
       if (pdfFile.uri) {
+        let pdfUploadUri = pdfFile.uri;
+
         try {
+          pdfUploadUri = await preparePdfForStorage(documentNumber, pdfFile.uri, pdfFile.base64);
           const uploadedPdf = await withTimeout(
-            uploadPdfToStorage(documentNumber, pdfFile.uri, pdfFile.base64),
+            uploadPdfToStorage(documentNumber, pdfUploadUri),
             MEDIA_UPLOAD_TIMEOUT_MS,
             'upload PDF trop long'
           );
 
           finalUploadedMedia = {
             ...uploadedMedia,
-            pdfLocalUri: pdfFile.uri,
+            pdfLocalUri: uploadedPdf.localUri,
             pdfPath: uploadedPdf.path,
             pdfUrl: uploadedPdf.url,
           };
         } catch (error) {
           finalUploadedMedia = {
             ...uploadedMedia,
-            pdfLocalUri: pdfFile.uri,
+            pdfLocalUri: pdfUploadUri,
           };
           finalStorageError = appendStorageError(
             finalStorageError,
@@ -695,19 +777,31 @@ export default function LettreDeVoitureScreen() {
         );
 
         if (fallbackPdfFile.uri) {
+          let fallbackPdfUploadUri = fallbackPdfFile.uri;
+
           try {
+            fallbackPdfUploadUri = await preparePdfForStorage(
+              documentNumber,
+              fallbackPdfFile.uri,
+              fallbackPdfFile.base64
+            );
             const uploadedFallbackPdf = await withTimeout(
-              uploadPdfToStorage(documentNumber, fallbackPdfFile.uri, fallbackPdfFile.base64),
+              uploadPdfToStorage(documentNumber, fallbackPdfUploadUri),
               MEDIA_UPLOAD_TIMEOUT_MS,
               'upload PDF allégé trop long'
             );
 
             finalUploadedMedia = {
               ...finalUploadedMedia,
+              pdfLocalUri: uploadedFallbackPdf.localUri,
               pdfPath: uploadedFallbackPdf.path,
               pdfUrl: uploadedFallbackPdf.url,
             };
           } catch (uploadFallbackError) {
+            finalUploadedMedia = {
+              ...finalUploadedMedia,
+              pdfLocalUri: fallbackPdfUploadUri,
+            };
             finalStorageError = appendStorageError(
               finalStorageError,
               `PDF allégé: ${getErrorMessage(uploadFallbackError)}`
@@ -847,7 +941,7 @@ export default function LettreDeVoitureScreen() {
             )}
             {hasPermission === false && (
               <View style={[styles.noticeBox, styles.dangerNotice]}>
-                <Text style={styles.noticeText}>L'accès à la caméra a été refusé.</Text>
+                <Text style={styles.noticeText}>L&apos;accès à la caméra a été refusé.</Text>
                 <ActionButton
                   label="Réessayer"
                   onPress={askForCameraPermission}
@@ -973,6 +1067,30 @@ export default function LettreDeVoitureScreen() {
             <Text style={styles.subtitle}>Saisie terrain, signature et PDF en fin de parcours.</Text>
           </View>
 
+          <View style={styles.fieldModePanel}>
+            <View style={styles.fieldModeHeader}>
+              <View style={styles.fieldModeCopy}>
+                <Text style={styles.fieldModeTitle}>Mode terrain</Text>
+                <Text style={styles.fieldModeText}>
+                  {pendingFieldCount > 0
+                    ? `${pendingFieldCount} document(s) en attente de synchronisation.`
+                    : 'Aucun document local en attente.'}
+                </Text>
+              </View>
+              {pendingFieldCount > 0 && (
+                <ActionButton
+                  label={fieldRetryButtonLabel}
+                  onPress={handleRetryFieldQueue}
+                  variant="secondary"
+                  disabled={isSaving || isSyncingFieldQueue}
+                />
+              )}
+            </View>
+            {fieldModeMessage && (
+              <Text style={styles.fieldModeStatus}>{fieldModeMessage}</Text>
+            )}
+          </View>
+
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -1095,6 +1213,44 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
     marginTop: Spacing.one,
+  },
+  fieldModePanel: {
+    backgroundColor: BrandColors.surface,
+    borderColor: BrandColors.line,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: Spacing.three,
+    padding: Spacing.three,
+  },
+  fieldModeHeader: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.three,
+    justifyContent: 'space-between',
+  },
+  fieldModeCopy: {
+    flexBasis: 220,
+    flexGrow: 1,
+    gap: Spacing.half,
+  },
+  fieldModeTitle: {
+    color: BrandColors.ink,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  fieldModeText: {
+    color: BrandColors.muted,
+    fontSize: 13,
+    fontWeight: '700',
+    lineHeight: 19,
+  },
+  fieldModeStatus: {
+    color: BrandColors.blue,
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 18,
+    marginTop: Spacing.two,
   },
   stepList: {
     gap: Spacing.two,

@@ -1,5 +1,5 @@
 {
-  "name": "lettre-de-voiture",
+  "name": "noha-transport-lettre-de-voiture",
   "main": "expo-router/entry",
   "version": "1.0.0",
   "dependencies": {
@@ -36,12 +36,16 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.15",
+    "eslint": "^9.0.0",
+    "eslint-config-expo": "~56.0.4",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start --go",
     "start:tunnel": "expo start --go --tunnel",
     "start:dev-client": "expo start --dev-client",
+    "build:android:preview": "npx --yes eas-cli build --platform android --profile preview",
+    "build:android:preview:local": "npx --yes eas-cli build --platform android --profile preview --local",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",

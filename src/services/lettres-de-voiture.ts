@@ -16,6 +16,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { app, db } from '@/firebase';
 
 const COLLECTION_NAME = 'lettresDeVoiture';
+const FIELD_QUEUE_DIR_NAME = 'noha-field-queue';
+const FIELD_QUEUE_FILE_NAME = 'pending.json';
 
 export type LettreDeVoitureStatus = 'draft' | 'pdf_generated';
 
@@ -51,6 +53,19 @@ export type LettreDeVoitureRecord = LettreDeVoiturePayload & {
   id: string;
   createdAt: Date | null;
   updatedAt: Date | null;
+};
+
+export type PendingFieldDocument = LettreDeVoiturePayload & {
+  queuedAtIso: string;
+  lastAttemptAtIso: string | null;
+  attemptCount: number;
+};
+
+export type FieldSyncSummary = {
+  attempted: number;
+  synced: number;
+  pending: number;
+  errors: string[];
 };
 
 type TimestampLike = {
@@ -146,6 +161,40 @@ function fromFirestoreDoc(id: string, data: DocumentData): LettreDeVoitureRecord
   };
 }
 
+function toLettrePayload(payload: LettreDeVoiturePayload): LettreDeVoiturePayload {
+  return {
+    documentNumber: payload.documentNumber,
+    createdAtIso: payload.createdAtIso,
+    expediteur: payload.expediteur,
+    destinataire: payload.destinataire,
+    lieuChargement: payload.lieuChargement,
+    lieuLivraison: payload.lieuLivraison,
+    marchandise: payload.marchandise,
+    reference: payload.reference,
+    quantite: payload.quantite,
+    observations: payload.observations,
+    status: payload.status,
+    media: {
+      hasPhoto: payload.media.hasPhoto,
+      hasSignature: payload.media.hasSignature,
+      photoLocalUri: payload.media.photoLocalUri,
+      photoPath: payload.media.photoPath,
+      photoUrl: payload.media.photoUrl,
+      signatureDataUrl: payload.media.signatureDataUrl,
+      signaturePath: payload.media.signaturePath,
+      signatureUrl: payload.media.signatureUrl,
+      pdfLocalUri: payload.media.pdfLocalUri,
+      pdfPath: payload.media.pdfPath,
+      pdfUrl: payload.media.pdfUrl,
+    },
+    storageError: payload.storageError,
+  };
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Erreur inconnue.';
+}
+
 function getStorageBucket() {
   const bucket =
     process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ?? app.options.storageBucket;
@@ -224,6 +273,7 @@ async function uploadLocalFileToStorage(
   }
 
   return {
+    localUri: fileUri,
     path: storagePath,
     url: getPublicStorageUrl(bucket, storagePath),
   };
@@ -281,6 +331,328 @@ async function writePdfToCache(documentNumber: string, pdfBase64: string) {
   return fileUri;
 }
 
+export async function preparePdfForStorage(
+  documentNumber: string,
+  pdfUri: string,
+  pdfBase64?: string
+) {
+  return pdfBase64 ? writePdfToCache(documentNumber, pdfBase64) : pdfUri;
+}
+
+function getFieldQueueBaseDirectory() {
+  const directory = FileSystem.documentDirectory ?? FileSystem.cacheDirectory;
+
+  if (!directory) {
+    throw new Error('Stockage local indisponible pour le mode terrain.');
+  }
+
+  return `${directory}${FIELD_QUEUE_DIR_NAME}/`;
+}
+
+function getFieldDocumentDirectory(documentNumber: string) {
+  return `${getFieldQueueBaseDirectory()}${sanitizeCacheFileName(documentNumber)}/`;
+}
+
+function getFieldDocumentFileUri(documentNumber: string) {
+  return `${getFieldDocumentDirectory(documentNumber)}${FIELD_QUEUE_FILE_NAME}`;
+}
+
+async function ensureDirectory(directoryUri: string) {
+  await FileSystem.makeDirectoryAsync(directoryUri, { intermediates: true });
+}
+
+async function copyLocalFileForQueue(sourceUri: string, destinationUri: string) {
+  if (!sourceUri.startsWith('file://')) {
+    return sourceUri;
+  }
+
+  const sourceInfo = await FileSystem.getInfoAsync(sourceUri);
+
+  if (!sourceInfo.exists) {
+    return sourceUri;
+  }
+
+  await FileSystem.copyAsync({
+    from: sourceUri,
+    to: destinationUri,
+  });
+
+  return destinationUri;
+}
+
+async function persistFieldMedia(payload: LettreDeVoiturePayload) {
+  const documentDirectory = getFieldDocumentDirectory(payload.documentNumber);
+  await ensureDirectory(documentDirectory);
+
+  const media = { ...payload.media };
+
+  if (media.photoLocalUri) {
+    media.photoLocalUri = await copyLocalFileForQueue(
+      media.photoLocalUri,
+      `${documentDirectory}photo.jpg`
+    );
+  }
+
+  if (media.pdfLocalUri) {
+    media.pdfLocalUri = await copyLocalFileForQueue(
+      media.pdfLocalUri,
+      `${documentDirectory}document.pdf`
+    );
+  }
+
+  return {
+    ...toLettrePayload(payload),
+    media,
+  };
+}
+
+function parsePendingFieldDocument(contents: string): PendingFieldDocument {
+  const parsed = JSON.parse(contents) as Partial<PendingFieldDocument>;
+  const documentNumber = normalizeString(parsed.documentNumber);
+
+  if (!documentNumber) {
+    throw new Error('Document terrain local invalide.');
+  }
+
+  const attemptCount =
+    typeof parsed.attemptCount === 'number' && Number.isFinite(parsed.attemptCount)
+      ? parsed.attemptCount
+      : 0;
+
+  return {
+    documentNumber,
+    createdAtIso: normalizeString(parsed.createdAtIso),
+    expediteur: normalizeString(parsed.expediteur),
+    destinataire: normalizeString(parsed.destinataire),
+    lieuChargement: normalizeString(parsed.lieuChargement),
+    lieuLivraison: normalizeString(parsed.lieuLivraison),
+    marchandise: normalizeString(parsed.marchandise),
+    reference: normalizeString(parsed.reference),
+    quantite: normalizeString(parsed.quantite),
+    observations: normalizeString(parsed.observations),
+    status: normalizeStatus(parsed.status),
+    media: normalizeMedia(parsed.media),
+    storageError: normalizeString(parsed.storageError) || null,
+    queuedAtIso: normalizeString(parsed.queuedAtIso) || new Date().toISOString(),
+    lastAttemptAtIso: normalizeString(parsed.lastAttemptAtIso) || null,
+    attemptCount,
+  };
+}
+
+async function writePendingFieldDocument(document: PendingFieldDocument) {
+  const documentDirectory = getFieldDocumentDirectory(document.documentNumber);
+  await ensureDirectory(documentDirectory);
+  await FileSystem.writeAsStringAsync(
+    getFieldDocumentFileUri(document.documentNumber),
+    JSON.stringify(document, null, 2)
+  );
+}
+
+export async function enqueueFieldDocument(payload: LettreDeVoiturePayload) {
+  const existingDocument = await getPendingFieldDocument(payload.documentNumber);
+  const queuedAtIso = existingDocument?.queuedAtIso ?? new Date().toISOString();
+  const persistedPayload = await persistFieldMedia(payload);
+  const pendingDocument: PendingFieldDocument = {
+    ...persistedPayload,
+    queuedAtIso,
+    lastAttemptAtIso: existingDocument?.lastAttemptAtIso ?? null,
+    attemptCount: existingDocument?.attemptCount ?? 0,
+  };
+
+  await writePendingFieldDocument(pendingDocument);
+
+  return pendingDocument;
+}
+
+export async function getPendingFieldDocument(documentNumber: string) {
+  try {
+    const contents = await FileSystem.readAsStringAsync(getFieldDocumentFileUri(documentNumber));
+    return parsePendingFieldDocument(contents);
+  } catch {
+    return null;
+  }
+}
+
+export async function listPendingFieldDocuments() {
+  try {
+    const baseDirectory = getFieldQueueBaseDirectory();
+    const queueInfo = await FileSystem.getInfoAsync(baseDirectory);
+
+    if (!queueInfo.exists) {
+      return [];
+    }
+
+    const entries = await FileSystem.readDirectoryAsync(baseDirectory);
+    const documents = await Promise.all(
+      entries.map(async (entry) => {
+        try {
+          const contents = await FileSystem.readAsStringAsync(
+            `${baseDirectory}${entry}/${FIELD_QUEUE_FILE_NAME}`
+          );
+          return parsePendingFieldDocument(contents);
+        } catch {
+          return null;
+        }
+      })
+    );
+
+    return documents
+      .filter((document): document is PendingFieldDocument => Boolean(document))
+      .sort((a, b) => b.queuedAtIso.localeCompare(a.queuedAtIso));
+  } catch {
+    return [];
+  }
+}
+
+export async function removePendingFieldDocument(documentNumber: string) {
+  await FileSystem.deleteAsync(getFieldDocumentDirectory(documentNumber), { idempotent: true });
+}
+
+async function uploadMissingFieldMedia(payload: LettreDeVoiturePayload) {
+  const media = { ...payload.media };
+  const errors: string[] = [];
+
+  if (media.hasPhoto && !media.photoUrl) {
+    if (media.photoLocalUri) {
+      try {
+        const uploadedPhoto = await uploadPhotoToStorage(payload.documentNumber, media.photoLocalUri);
+        media.photoLocalUri = uploadedPhoto.localUri;
+        media.photoPath = uploadedPhoto.path;
+        media.photoUrl = uploadedPhoto.url;
+      } catch (error) {
+        errors.push(`photo: ${getErrorMessage(error)}`);
+      }
+    } else {
+      errors.push('photo: fichier local absent');
+    }
+  }
+
+  if (media.hasSignature && !media.signatureUrl) {
+    if (media.signatureDataUrl) {
+      try {
+        const uploadedSignature = await uploadSignatureToStorage(
+          payload.documentNumber,
+          media.signatureDataUrl
+        );
+        media.signaturePath = uploadedSignature.path;
+        media.signatureUrl = uploadedSignature.url;
+      } catch (error) {
+        errors.push(`signature: ${getErrorMessage(error)}`);
+      }
+    } else {
+      errors.push('signature: donnée locale absente');
+    }
+  }
+
+  if (payload.status === 'pdf_generated' && !media.pdfUrl) {
+    if (media.pdfLocalUri) {
+      try {
+        const uploadedPdf = await uploadPdfToStorage(payload.documentNumber, media.pdfLocalUri);
+        media.pdfLocalUri = uploadedPdf.localUri;
+        media.pdfPath = uploadedPdf.path;
+        media.pdfUrl = uploadedPdf.url;
+      } catch (error) {
+        errors.push(`PDF: ${getErrorMessage(error)}`);
+      }
+    } else {
+      errors.push('PDF: fichier local absent');
+    }
+  }
+
+  return {
+    media,
+    storageError: errors.length ? `Storage incomplet (${errors.join(' | ')})` : null,
+  };
+}
+
+export async function syncPendingFieldDocument(documentNumber: string) {
+  const pendingDocument = await getPendingFieldDocument(documentNumber);
+
+  if (!pendingDocument) {
+    throw new Error('Aucun document terrain en attente pour cette référence.');
+  }
+
+  const lastAttemptAtIso = new Date().toISOString();
+  const attemptCount = pendingDocument.attemptCount + 1;
+
+  try {
+    const { media, storageError } = await uploadMissingFieldMedia(pendingDocument);
+    const updatedPayload: LettreDeVoiturePayload = {
+      ...toLettrePayload(pendingDocument),
+      media,
+      storageError,
+    };
+
+    await upsertLettreDeVoiture(updatedPayload);
+
+    const updatedDocument: PendingFieldDocument = {
+      ...updatedPayload,
+      queuedAtIso: pendingDocument.queuedAtIso,
+      lastAttemptAtIso,
+      attemptCount,
+    };
+
+    if (!storageError) {
+      await removePendingFieldDocument(documentNumber);
+
+      return {
+        document: updatedDocument,
+        storageError: null,
+        synced: true,
+      };
+    }
+
+    await writePendingFieldDocument(updatedDocument);
+
+    return {
+      document: updatedDocument,
+      storageError,
+      synced: false,
+    };
+  } catch (error) {
+    const updatedDocument: PendingFieldDocument = {
+      ...pendingDocument,
+      storageError: `Synchronisation en attente (${getErrorMessage(error)})`,
+      lastAttemptAtIso,
+      attemptCount,
+    };
+
+    await writePendingFieldDocument(updatedDocument);
+
+    return {
+      document: updatedDocument,
+      storageError: updatedDocument.storageError,
+      synced: false,
+    };
+  }
+}
+
+export async function syncAllPendingFieldDocuments(): Promise<FieldSyncSummary> {
+  const pendingDocuments = await listPendingFieldDocuments();
+  const summary: FieldSyncSummary = {
+    attempted: pendingDocuments.length,
+    synced: 0,
+    pending: 0,
+    errors: [],
+  };
+
+  for (const document of pendingDocuments) {
+    const result = await syncPendingFieldDocument(document.documentNumber);
+
+    if (result.synced) {
+      summary.synced += 1;
+    } else {
+      summary.pending += 1;
+
+      if (result.storageError) {
+        summary.errors.push(`${document.documentNumber}: ${result.storageError}`);
+      }
+    }
+  }
+
+  return summary;
+}
+
 export async function uploadPhotoToStorage(documentNumber: string, photoUri: string) {
   return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/photo.jpg`,
@@ -304,7 +676,7 @@ export async function uploadPdfToStorage(
   pdfUri: string,
   pdfBase64?: string
 ) {
-  const uploadUri = pdfBase64 ? await writePdfToCache(documentNumber, pdfBase64) : pdfUri;
+  const uploadUri = await preparePdfForStorage(documentNumber, pdfUri, pdfBase64);
 
   return uploadLocalFileToStorage(
     `lettresDeVoiture/${documentNumber}/document.pdf`,
@@ -316,11 +688,12 @@ export async function uploadPdfToStorage(
 export async function upsertLettreDeVoiture(payload: LettreDeVoiturePayload) {
   const documentRef = doc(db, COLLECTION_NAME, payload.documentNumber);
   const createdAt = new Date(payload.createdAtIso);
+  const lettrePayload = toLettrePayload(payload);
 
   await setDoc(
     documentRef,
     {
-      ...payload,
+      ...lettrePayload,
       createdAt: Timestamp.fromDate(createdAt),
       updatedAt: serverTimestamp(),
     },

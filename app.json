@@ -1,14 +1,18 @@
 {
   "expo": {
-    "name": "lettre-de-voiture",
-    "slug": "lettre-de-voiture",
+    "name": "NohaTransport",
+    "slug": "noha-transport-lettre-de-voiture",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "lettredevoiture",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "bundleIdentifier": "com.nohatransport.lettredevoiture",
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSCameraUsageDescription": "NohaTransport utilise la caméra pour joindre une photo de la marchandise à la lettre de voiture."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -17,8 +21,12 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "permissions": [
+        "CAMERA",
+        "INTERNET"
+      ],
       "predictiveBackGestureEnabled": false,
-      "package": "com.anonymous.lettre-de-voiture"
+      "package": "com.nohatransport.lettredevoiture"
     },
     "web": {
       "output": "static",

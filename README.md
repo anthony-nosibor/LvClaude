@@ -4,6 +4,32 @@
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
 
+## MVP terrain NohaTransport
+
+### APK preview Android
+
+La configuration EAS du projet contient un profil `preview` qui génère une APK installable pour test terrain.
+
+```bash
+npm run build:android:preview
+```
+
+Avant le premier build, connecte-toi à Expo/EAS si nécessaire :
+
+```bash
+npx --yes eas-cli login
+```
+
+Le profil utilisé est défini dans `eas.json` :
+
+- distribution interne
+- Android en `apk`
+- identifiant Android `com.nohatransport.lettredevoiture`
+
+### Mode terrain minimal
+
+Si Firestore ou Storage ne répond pas pendant une saisie, l'app conserve le document localement. Depuis l'accueil ou l'historique, le bouton `Réessayer` relance la synchronisation des documents en attente.
+
 ## Get started
 
 #### Android
