@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Camera, CameraView } from 'expo-camera';
+import { useRouter } from 'expo-router';
 import * as Print from 'expo-print';
 import SignatureView from 'react-native-signature-canvas';
 
@@ -41,6 +42,7 @@ const steps = [
 const MEDIA_UPLOAD_TIMEOUT_MS = 12000;
 const PDF_GENERATION_TIMEOUT_MS = 30000;
 const PDF_FALLBACK_TIMEOUT_MS = 15000;
+const HOME_REDIRECT_DELAY_MS = 600;
 
 function escapeHtml(value: string) {
   return value
@@ -165,6 +167,7 @@ function Field({
 }
 
 export default function LettreDeVoitureScreen() {
+  const router = useRouter();
   const [currentStep, setCurrentStep] = useState(0);
   const [expediteur, setExpediteur] = useState('');
   const [destinataire, setDestinataire] = useState('');
@@ -189,7 +192,7 @@ export default function LettreDeVoitureScreen() {
   const [isSyncingFieldQueue, setIsSyncingFieldQueue] = useState(false);
   const cameraRef = useRef<CameraView | null>(null);
   const signatureRef = useRef<any>(null);
-  const createdAt = useMemo(() => new Date(), []);
+  const [createdAt, setCreatedAt] = useState(() => new Date());
   const documentNumber = useMemo(() => {
     const stamp = createdAt
       .toISOString()
@@ -236,6 +239,28 @@ export default function LettreDeVoitureScreen() {
     return () => {
       isMounted = false;
     };
+  }, []);
+
+  const resetCurrentLetter = useCallback(() => {
+    setCurrentStep(0);
+    setExpediteur('');
+    setDestinataire('');
+    setLieuChargement('');
+    setLieuLivraison('');
+    setMarchandise('');
+    setReference('');
+    setQuantite('');
+    setObservations('');
+    setPhoto(null);
+    setSignature(null);
+    setIsScrollEnabled(true);
+    setIsTakingPicture(false);
+    setCameraMessage('');
+    setSignatureMessage('');
+    setSaveState('idle');
+    setSaveMessage('');
+    setSavedDocumentId(null);
+    setCreatedAt(new Date());
   }, []);
 
   const buildPayload = (
@@ -835,6 +860,11 @@ export default function LettreDeVoitureScreen() {
           ? `Document sauvegardé, mais ${finalStorageError}`
           : 'Document sauvegardé dans Firebase.'
       );
+
+      setTimeout(() => {
+        resetCurrentLetter();
+        router.replace('/');
+      }, HOME_REDIRECT_DELAY_MS);
     } catch (error) {
       setSaveState('error');
       setSaveMessage(
